@@ -200,8 +200,14 @@ fn install_package(pkg: &str, version: &str) -> Result<(), Box<dyn std::error::E
 
     let filename = format!("{pkg}_{version}.deb");
     let package_path = PathBuf::from(PACKAGE_DIR).join(&filename);
-    let remote_path = format!("{}/{filename}", config.ftp.remote_path.trim_end_matches('/'));
-    let url = format!("ftp://{}:{}{}", config.ftp.host, config.ftp.port, remote_path);
+    let remote_path = format!(
+        "{}/{filename}",
+        config.ftp.remote_path.trim_end_matches('/')
+    );
+    let url = format!(
+        "ftp://{}:{}{}",
+        config.ftp.host, config.ftp.port, remote_path
+    );
 
     println!("Downloading {filename} from {url}...");
     let status = ProcessCommand::new("wget")
