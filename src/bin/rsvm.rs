@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
@@ -20,18 +22,10 @@ struct Config {
     pkg: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct NormalConfig {
     #[serde(default)]
     version: String,
-}
-
-impl Default for NormalConfig {
-    fn default() -> Self {
-        Self {
-            version: "1.0.0".to_string(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -67,8 +61,6 @@ enum Command {
         #[arg(value_name = "PKG")]
         pkg: String,
     },
-    /// Upgrade the robot system.
-    Upgrade,
     /// Reload the robot system.
     Reload,
     /// Initialize the robot system.
@@ -93,15 +85,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Install { pkg, version } => install_package(&pkg, &version)?,
         Command::List => list_packages()?,
         Command::History { pkg } => show_history(&pkg)?,
-        Command::Upgrade => println!("upgrade"),
         Command::Reload => reload_packages()?,
-        Command::Init => initialize_config()?,
+        Command::Init => {
+            ensure_init_runs_as_root()?;
+            initialize_config()?
+        }
         Command::Info { pkg } => show_package_info(&pkg)?,
         Command::Completions { shell } => {
             generate(shell, &mut Cli::command(), "rsvm", &mut io::stdout());
         }
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_init_runs_as_root() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("SUDO_USER").is_some() {
+        return Ok(());
+    }
+
+    let executable = std::env::current_exe()?;
+    let error = ProcessCommand::new("sudo")
+        .arg("--")
+        .arg(executable)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    Err(error.into())
+}
+
+#[cfg(not(unix))]
+fn ensure_init_runs_as_root() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 

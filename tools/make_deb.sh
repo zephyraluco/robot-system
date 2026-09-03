@@ -13,7 +13,7 @@ if [ "${tgt_version}" == "" ]; then
 fi
 
 if [ "${tgt_install_prefix}" == "" ]; then
-    tgt_install_prefix=/usr
+    tgt_install_prefix=/usr/local
 fi
 echo "deb install prefix is ${tgt_install_prefix}"
 
@@ -39,6 +39,7 @@ mkdir -p ${route}/../dist/${pkg_name}/etc
 ## 2. copy targets to deb ready dir
 cp ${route}/../target/release/rsvm ${route}/../dist/${pkg_name}/${tgt_install_prefix}/bin/
 cp ${route}/../target/release/rsctl ${route}/../dist/${pkg_name}/${tgt_install_prefix}/bin/
+cp -r ${route}/../etc ${route}/../dist/${pkg_name}/etc/robot-system
 
 ## 3. make various config files under DEBIAN dir
 cd ${route}/../dist/${pkg_name}/DEBIAN

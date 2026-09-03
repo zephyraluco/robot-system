@@ -79,13 +79,13 @@ cargo build --release --locked
 ### 控制系统
 
 ```bash
-rsctl status
-rsctl start
-rsctl stop
-rsctl restart
+rsctl status <pkg>
+rsctl start <pkg>
+rsctl stop <pkg>
+rsctl restart <pkg>
 ```
 
-这些命令当前用于验证控制接口，分别输出对应的操作名称；实际服务控制逻辑将随着系统服务集成逐步接入。
+这些命令会分别调用 `systemctl` 控制对应的 `<pkg>.service` 服务。
 
 查看所有命令：
 
