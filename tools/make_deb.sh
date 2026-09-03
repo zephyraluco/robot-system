@@ -34,12 +34,14 @@ fi
 mkdir -p ${route}/../dist/${pkg_name}
 mkdir -p ${route}/../dist/${pkg_name}/DEBIAN
 mkdir -p ${route}/../dist/${pkg_name}/${tgt_install_prefix}/bin
-mkdir -p ${route}/../dist/${pkg_name}/etc
+mkdir -p ${route}/../dist/${pkg_name}/etc/robot-system
+mkdir -p ${route}/../dist/${pkg_name}/etc/systemd/system
 
 ## 2. copy targets to deb ready dir
 cp ${route}/../target/release/rsvm ${route}/../dist/${pkg_name}/${tgt_install_prefix}/bin/
 cp ${route}/../target/release/rsctl ${route}/../dist/${pkg_name}/${tgt_install_prefix}/bin/
-cp -r ${route}/../etc ${route}/../dist/${pkg_name}/etc/robot-system
+cp ${route}/../etc/robot-system.conf ${route}/../dist/${pkg_name}/etc/robot-system/
+cp ${route}/../etc/robot-system.target ${route}/../dist/${pkg_name}/etc/systemd/system/
 
 ## 3. make various config files under DEBIAN dir
 cd ${route}/../dist/${pkg_name}/DEBIAN
