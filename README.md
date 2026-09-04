@@ -120,7 +120,7 @@ sudo rsvm info <package>
 sudo rsvm history <package>
 ```
 
-重新扫描服务并更新组件记录：
+将服务文件链接到 systemd 单元目录：
 
 ```bash
 sudo rsvm reload

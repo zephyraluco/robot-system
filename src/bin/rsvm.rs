@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 #[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -156,7 +158,7 @@ fn reload_packages() -> Result<(), Box<dyn std::error::Error>> {
         .parent()
         .ok_or("configuration directory not found")?
         .join("services");
-    let mut config = read_config()?;
+    let systemd_path = PathBuf::from("/etc/systemd/system");
 
     for entry in fs::read_dir(services_path)? {
         let path = entry?.path();
@@ -164,24 +166,33 @@ fn reload_packages() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let Some(pkg) = path.file_stem().and_then(|name| name.to_str()) else {
+        let Some(service_name) = path.file_name() else {
             continue;
         };
-        match installed_package_version(pkg)? {
-            Some(version) => {
-                let is_new = !config.pkg.contains_key(pkg);
-                config.pkg.insert(pkg.to_owned(), version.clone());
-                if is_new {
-                    println!("{pkg} {version}");
-                }
+        let link_path = systemd_path.join(service_name);
+
+        if let Ok(metadata) = fs::symlink_metadata(&link_path) {
+            if !metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "cannot replace non-symlink systemd unit {}",
+                    link_path.display()
+                )
+                .into());
             }
-            None => {
-                eprintln!("Error: package {pkg} is not installed");
-            }
+            fs::remove_file(&link_path)?;
         }
+
+        symlink(&path, &link_path)?;
+        println!("{} -> {}", link_path.display(), path.display());
     }
 
-    fs::write(CONFIG_PATH, toml::to_string_pretty(&config)?)?;
+    let status = ProcessCommand::new("systemctl")
+        .arg("daemon-reload")
+        .status()?;
+    if !status.success() {
+        return Err("systemctl daemon-reload failed".into());
+    }
+
     Ok(())
 }
 
