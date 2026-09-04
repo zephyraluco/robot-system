@@ -54,7 +54,6 @@ impl App {
             || self.memory_file_selector.visible
             || self.hooks_config_menu.visible
             || self.overage_upsell.visible
-            || self.voice_mode_notice.visible
             || self.memory_update_notification.visible
             || self.desktop_upsell.visible
             || self.import_config_dialog.visible

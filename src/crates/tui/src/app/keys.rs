@@ -1079,29 +1079,6 @@ impl App {
             return false;
         }
 
-        // Voice mode notice dismiss
-        if key.code == KeyCode::Esc && self.voice_mode_notice.visible {
-            self.voice_mode_notice.dismiss();
-            return false;
-        }
-
-        // Cancel an active voice recording with Esc.
-        if key.code == KeyCode::Esc && self.voice_recording {
-            self.voice_recording = false;
-            self.voice_event_rx = None;
-            if let Some(ref recorder_arc) = self.voice_recorder {
-                let recorder = recorder_arc.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Ok(mut r) = recorder.lock() {
-                        tokio::runtime::Handle::current()
-                            .block_on(r.stop_recording())
-                            .ok();
-                    }
-                });
-            }
-            self.status_message = Some("Recording cancelled.".to_string());
-            return false;
-        }
 
         // Desktop upsell startup dialog
         if self.desktop_upsell.visible {
@@ -1206,76 +1183,6 @@ impl App {
             *self.selection_text.borrow_mut() = String::new();
         }
 
-        // ---- Voice hold-to-talk (Alt+V toggles recording on/off) ----------
-        if key.code == KeyCode::Char('v')
-            && key.modifiers.contains(KeyModifiers::ALT)
-            && self.voice_recorder.is_some()
-        {
-            if !self.voice_recording {
-                // First press: start recording.
-                let (tx, rx) = tokio::sync::mpsc::channel(8);
-                self.voice_event_rx = Some(rx);
-                self.voice_recording = true;
-                if let Some(ref recorder_arc) = self.voice_recorder {
-                    let recorder = recorder_arc.clone();
-                    // Use spawn_blocking so we don't hold a std::sync::MutexGuard
-                    // across an await point.  start_recording internally spawns a
-                    // tokio task and returns quickly, so blocking is negligible.
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut r) = recorder.lock() {
-                            // start_recording is async but its real work happens in
-                            // a spawned task; use block_on to drive the short setup.
-                            tokio::runtime::Handle::current()
-                                .block_on(r.start_recording(tx))
-                                .ok();
-                        }
-                    });
-                }
-                self.push_notification(
-                    NotificationKind::Info,
-                    "Recording\u{2026} (Alt+V to transcribe · Esc to cancel)".to_string(),
-                    None,
-                );
-            } else {
-                // Second press: stop recording.  stop_recording() just flips an
-                // AtomicBool; drive it synchronously to avoid Send issues.
-                self.voice_recording = false;
-                if let Some(ref recorder_arc) = self.voice_recorder {
-                    let recorder = recorder_arc.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut r) = recorder.lock() {
-                            tokio::runtime::Handle::current()
-                                .block_on(r.stop_recording())
-                                .ok();
-                        }
-                    });
-                }
-                self.push_notification(
-                    NotificationKind::Info,
-                    "Transcribing\u{2026}".to_string(),
-                    Some(10),
-                );
-            }
-            return false;
-        }
-
-        // ---- Voice PTT: plain V press starts recording when voice is on ----
-        // This is the "hold to talk" variant.  The user presses V to begin
-        // recording; releasing V (handled in the run loop) or pressing Enter
-        // stops the capture and triggers transcription.
-        // Only active when voice mode is enabled (voice_recorder is Some) and
-        // the prompt input is in default (non-vim) mode so 'v' doesn't conflict
-        // with vim keybindings.
-        if key.code == KeyCode::Char('v')
-            && key.modifiers == KeyModifiers::NONE
-            && self.voice_recorder.is_some()
-            && !self.voice_recording
-            && self.prompt_input.vim_mode == crate::prompt_input::VimMode::Insert
-        {
-            self.handle_voice_ptt_start();
-            return false;
-        }
-
         // ---- Ctrl+V / Cmd+V — clipboard paste (image first, then text fallback) ----
         // Only fires when NOT in vim Normal/Visual/VisualBlock mode (where \x16 is
         // already consumed by the vim handler above to enter VisualBlock mode).
@@ -1310,15 +1217,6 @@ impl App {
         // ---- Shift+Insert — selection/clipboard paste fallback -------------
         if key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT) {
             let _ = self.paste_primary_into_prompt();
-            return false;
-        }
-
-        // ---- Enter while PTT recording: stop capture instead of submitting ----
-        if key.code == KeyCode::Enter
-            && self.voice_recording
-            && self.voice_recorder.is_some()
-        {
-            self.handle_voice_ptt_stop();
             return false;
         }
 
@@ -2640,8 +2538,8 @@ impl App {
     ///
     /// On Windows Terminal, Ctrl+V causes the terminal emulator to write the
     /// clipboard content directly to stdin as raw character events — every
-    /// newline becomes an Enter keypress and stray `v` characters trigger
-    /// voice PTT.  Because a paste dumps ALL characters into the queue at
+    /// newline becomes an Enter keypress. Because a paste dumps ALL characters
+    /// into the queue at
     /// once, a zero-timeout drain immediately after the first character
     /// reliably yields 3+ chars for any non-trivial paste, while normal
     /// keyboard typing (even at 120 WPM) almost never queues more than one

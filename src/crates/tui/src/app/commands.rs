@@ -66,12 +66,11 @@ pub(super) const PROMPT_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("update", "Check for updates and upgrade to the latest version"),
     ("upgrade", "Check for updates and upgrade to the latest version"),
     ("vim", "Toggle vim keybindings"),
-    ("voice", "Toggle voice input mode"),
 ];
 
 pub(super) fn help_command_category(name: &str) -> &'static str {
     match name {
-        "connect" | "model" | "providers" | "refresh" | "fast" | "effort" | "voice" => "Model & Provider",
+        "connect" | "model" | "providers" | "refresh" | "fast" | "effort" => "Model & Provider",
         "changes" | "diff" | "review" | "rewind" | "export" | "copy" | "share" | "links" => "Review & History",
         "stats" | "cost" | "context" | "insights" | "heapdump" | "doctor" => "Diagnostics",
         "config" | "settings" | "theme" | "keybindings" | "hooks" | "mcp" | "import-config" => {
@@ -301,40 +300,6 @@ impl App {
                     Some(&self.model_registry),
                 );
                 self.effort_picker.open(self.effort_level, levels);
-                true
-            }
-            "voice" => {
-                let was_on = self.voice_recorder.is_some();
-                if was_on {
-                    // Stop any active recording before disabling.
-                    if self.voice_recording {
-                        self.voice_recording = false;
-                        self.voice_event_rx = None;
-                        if let Some(ref recorder_arc) = self.voice_recorder {
-                            let recorder = recorder_arc.clone();
-                            tokio::task::spawn_blocking(move || {
-                                if let Ok(mut r) = recorder.lock() {
-                                    tokio::runtime::Handle::current()
-                                        .block_on(r.stop_recording())
-                                        .ok();
-                                }
-                            });
-                        }
-                    }
-                    self.voice_recorder = None;
-                    self.voice_mode_notice.dismiss();
-                    self.status_message = Some("Voice mode disabled.".to_string());
-                } else {
-                    let recorder = claurst_core::voice::global_voice_recorder();
-                    if let Ok(mut r) = recorder.lock() {
-                        r.set_enabled(true);
-                    }
-                    self.voice_recorder = Some(recorder);
-                    self.voice_mode_notice = crate::voice_mode_notice::VoiceModeNoticeState::new();
-                    self.status_message = Some(
-                        "Voice mode enabled. Press Alt+V to start recording.".to_string(),
-                    );
-                }
                 true
             }
             "doctor" => {

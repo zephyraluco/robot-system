@@ -81,7 +81,7 @@
 
 `tui` 负责终端中的可视化交互，包括消息渲染、输入编辑、滚动、状态提示、快捷操作、代码高亮和工具输出展示。它依赖核心状态与查询流程，但不应把 provider 的具体 HTTP 细节直接放入 UI。
 
-该 crate 还提供若干可选功能，例如语音输入、历史选择器、快速搜索、远程桥接模式、记忆和 agent 相关能力。`voice` 特性启用真实麦克风采集，会额外依赖系统音频库。
+该 crate 还提供若干可选功能，例如历史选择器、快速搜索、远程桥接模式、记忆和 agent 相关能力。
 
 ### `claurst-commands`：命令实现层
 
@@ -90,7 +90,7 @@
 - 账户、认证、provider 和模型配置
 - 会话、历史、搜索、导出、分享和统计
 - 权限、沙箱、MCP、插件和托管 agent 管理
-- 目标、记忆、远程会话、语音和 UI 设置
+- 目标、记忆、远程会话和 UI 设置
 - 诊断、doctor、维护和升级相关操作
 
 它是命令行为的集中位置，主 CLI 主要负责解析参数和调用这里的实现。
@@ -168,10 +168,8 @@ graph TD
 
 ## 构建提示
 
-不启用语音功能时，可以构建全部 workspace：
+可以构建全部 workspace：
 
 ```bash
 cargo build --workspace --no-default-features
 ```
-
-启用 `claurst` CLI 的默认 `voice` 特性时，Linux 环境还需要 ALSA 开发文件，例如 Debian/Ubuntu 上的 `libasound2-dev`。

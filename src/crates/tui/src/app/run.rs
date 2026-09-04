@@ -393,61 +393,6 @@ impl App {
                 });
             }
 
-            // Drain voice transcription events (non-blocking).
-            // When the background recording/transcription task emits a
-            // TranscriptReady event we insert the text directly into the
-            // prompt so the user can review and submit it.
-            {
-                use claurst_core::voice::VoiceEvent;
-                let mut events = Vec::new();
-                if let Some(ref mut rx) = self.voice_event_rx {
-                    while let Ok(ev) = rx.try_recv() {
-                        events.push(ev);
-                    }
-                }
-                for ev in events {
-                    match ev {
-                        VoiceEvent::RecordingStarted => {
-                            self.voice_recording = true;
-                            self.status_message =
-                                Some("Recording\u{2026} (Alt+V or Esc to stop)".to_string());
-                        }
-                        VoiceEvent::RecordingStopped => {
-                            self.voice_recording = false;
-                            self.status_message =
-                                Some("Transcribing\u{2026}".to_string());
-                        }
-                        VoiceEvent::TranscriptReady(text) => {
-                            if !text.is_empty() {
-                                // Append to existing prompt text with a space separator
-                                // so the user can combine voice + typed input.
-                                if !self.prompt_input.text.is_empty()
-                                    && !self.prompt_input.text.ends_with(' ')
-                                {
-                                    self.prompt_input.paste(" ");
-                                }
-                                self.prompt_input.paste(&text);
-                                self.refresh_prompt_input();
-                                self.status_message = Some(
-                                    format!("Transcribed: {}", &text[..text.len().min(60)])
-                                );
-                            }
-                            // Clear the channel once we have the result.
-                            self.voice_event_rx = None;
-                        }
-                        VoiceEvent::Error(msg) => {
-                            self.voice_recording = false;
-                            self.voice_event_rx = None;
-                            self.push_notification(
-                                NotificationKind::Warning,
-                                format!("Voice: {}", msg),
-                                Some(8),
-                            );
-                        }
-                    }
-                }
-            }
-
             // Draw the frame, and immediately scan the *just-rendered*
             // buffer for URL runs. ratatui swaps its two buffers at the
             // end of draw(), so by the time draw() returns,
@@ -484,27 +429,15 @@ impl App {
                 match event {
                     Event::Key(key) => {
                         // On Windows crossterm fires both Press and Release events.
-                        // We normally skip non-press events, but when voice PTT mode
-                        // is active we need the Release event for the `V` key so we
-                        // can stop recording as soon as the user lifts the key.
                         if key.kind != crossterm::event::KeyEventKind::Press {
-                            // Handle V-key release to stop PTT recording.
-                            if key.kind == crossterm::event::KeyEventKind::Release
-                                && key.code == KeyCode::Char('v')
-                                && key.modifiers == KeyModifiers::NONE
-                                && self.voice_recording
-                                && self.voice_recorder.is_some()
-                            {
-                                self.handle_voice_ptt_stop();
-                            }
                             continue;
                         }
 
                         // ---- Paste-burst detection -----------------------------------------
                         // On Windows Terminal, Ctrl+V causes the terminal to write clipboard
-                        // content as raw character events (not as Event::Paste).  Every `\n`
-                        // fires as Enter (submitting the prompt) and stray `v` chars trigger
-                        // voice PTT.  We detect this by draining the event queue with a
+                        // content as raw character events (not as Event::Paste). Every `\n`
+                        // fires as Enter (submitting the prompt). We detect this by draining
+                        // the event queue with a
                         // zero-timeout immediately after the first character arrives — a paste
                         // dumps every character at once while normal typing rarely queues more
                         // than one char in the same 50 ms window.

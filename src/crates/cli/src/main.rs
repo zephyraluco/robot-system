@@ -2357,13 +2357,13 @@ async fn run_interactive(
                             //   /model claude-haiku  → set model, don't open picker
                             //   /theme dark          → set theme, don't open picker
                             //   /resume <id>         → load session, don't open browser
-                            // Also skip TUI for /vim, /voice, /fast with explicit
+                            // Also skip TUI for /vim and /fast with explicit
                             // on|off args so the blind-toggle doesn't misfire.
                             let skip_tui_for_args = !cmd_args.is_empty()
                                 && matches!(
                                     cmd_name.as_str(),
                                     "model" | "theme" | "resume" | "session"
-                                        | "vim" | "vi" | "voice" | "fast" | "speed"
+                                        | "vim" | "vi" | "fast" | "speed"
                                 );
                             let handled_by_tui = if skip_tui_for_args {
                                 false

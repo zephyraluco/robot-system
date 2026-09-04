@@ -20,7 +20,7 @@ pub use types::{
 };
 
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use claurst_core::config::{Config, Settings, Theme};
 use claurst_core::cost::CostTracker;
@@ -293,8 +293,6 @@ pub struct App {
     pub hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState,
     /// Overage credit upsell banner.
     pub overage_upsell: crate::overage_upsell::OverageCreditUpsellState,
-    /// Voice mode availability notice.
-    pub voice_mode_notice: crate::voice_mode_notice::VoiceModeNoticeState,
     /// Desktop app upsell startup dialog.
     pub desktop_upsell: crate::desktop_upsell_startup::DesktopUpsellStartupState,
     /// Startup error dialog for malformed settings.json or AGENTS.md.
@@ -428,14 +426,6 @@ pub struct App {
     /// Guard to prevent re-triggering auto-compact while one is in flight.
     pub auto_compact_running: bool,
 
-    // ---- Voice hold-to-talk ------------------------------------------------
-
-    /// The global voice recorder, Some when voice is enabled in config.
-    pub voice_recorder: Option<Arc<Mutex<claurst_core::voice::VoiceRecorder>>>,
-    /// True while recording is active (Alt+V toggled on).
-    pub voice_recording: bool,
-    /// Receiver for VoiceEvent messages produced by the recorder task.
-    pub voice_event_rx: Option<tokio::sync::mpsc::Receiver<claurst_core::voice::VoiceEvent>>,
     /// A single key event that was drained from the queue during paste-burst
     /// detection but wasn't part of the burst (e.g. a modifier key that stopped
     /// the burst). Replayed at the top of the next loop iteration.
@@ -666,7 +656,6 @@ impl App {
             memory_file_selector: crate::memory_file_selector::MemoryFileSelectorState::new(),
             hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState::new(),
             overage_upsell: crate::overage_upsell::OverageCreditUpsellState::new(),
-            voice_mode_notice: crate::voice_mode_notice::VoiceModeNoticeState::new(),
             desktop_upsell: crate::desktop_upsell_startup::DesktopUpsellStartupState::new(),
             invalid_config_dialog: crate::invalid_config_dialog::InvalidConfigDialogState::new(),
             memory_update_notification: crate::memory_update_notification::MemoryUpdateNotificationState::new(),
@@ -740,34 +729,6 @@ impl App {
             auto_compact_enabled: false,
             auto_compact_threshold: 95,
             auto_compact_running: false,
-            voice_recorder: {
-                // Check whether voice input has been enabled via the /voice command
-                // (stored in ~/.claurst/ui-settings.json).  We also accept
-                // CLAURST_VOICE_ENABLED=1 as an override for easier testing.
-                let voice_on = std::env::var("CLAURST_VOICE_ENABLED")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false)
-                    || {
-                        let path = claurst_core::config::Settings::config_dir()
-                            .join("ui-settings.json");
-                        std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                            .and_then(|v| v["voice_enabled"].as_bool())
-                            .unwrap_or(false)
-                    };
-                if voice_on {
-                    let recorder = claurst_core::voice::global_voice_recorder();
-                    if let Ok(mut r) = recorder.lock() {
-                        r.set_enabled(true);
-                    }
-                    Some(recorder)
-                } else {
-                    None
-                }
-            },
-            voice_recording: false,
-            voice_event_rx: None,
             pending_key: None,
             model_fetch_rx: None,
             user_question_rx: None,

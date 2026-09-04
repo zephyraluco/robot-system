@@ -125,8 +125,6 @@ pub mod memory_file_selector;
 pub mod hooks_config_menu;
 /// Overage credit upsell banner (shown when user exceeds free-tier limit).
 pub mod overage_upsell;
-/// Voice mode availability notice (shown when voice is available but not enabled).
-pub mod voice_mode_notice;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
 pub mod message_copy;
 /// Desktop app upsell startup dialog (shown at startup on macOS/Windows x64).
@@ -157,8 +155,6 @@ pub mod custom_provider_dialog;
 pub mod free_mode_dialog;
 /// Device code / browser-based auth overlay (GitHub Copilot, Anthropic OAuth).
 pub mod device_auth_dialog;
-/// Push-to-talk voice capture and Whisper transcription.
-pub mod voice_capture;
 /// Task progress overlay (Ctrl+T) — shows task status with inline toggle.
 pub mod tasks_overlay;
 /// Import-config preview and confirmation dialog.
@@ -183,7 +179,6 @@ pub use feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResp
 pub use memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
 pub use hooks_config_menu::{HooksConfigMenuState, HookEntry};
 pub use overage_upsell::{OverageCreditUpsellState, render_overage_upsell};
-pub use voice_mode_notice::{VoiceModeNoticeState, render_voice_mode_notice};
 pub use desktop_upsell_startup::{DesktopUpsellStartupState, DesktopUpsellSelection, render_desktop_upsell_startup};
 pub use memory_update_notification::{MemoryUpdateNotificationState, render_memory_update_notification, get_relative_memory_path};
 pub use elicitation_dialog::{ElicitationDialogState, ElicitationField, ElicitationFieldKind, ElicitationResult, render_elicitation_dialog};

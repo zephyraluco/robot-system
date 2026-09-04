@@ -4385,11 +4385,10 @@ pub mod oauth {
 pub use oauth::OAuthTokens;
 
 // ---------------------------------------------------------------------------
-// New modules: keybindings, voice, analytics, lsp, team_memory_sync,
+// New modules: keybindings, analytics, lsp, team_memory_sync,
 //              system_prompt, memdir, oauth_config
 // ---------------------------------------------------------------------------
 pub mod keybindings;
-pub mod voice;
 pub mod analytics;
 pub mod lsp;
 pub mod session_tracing;

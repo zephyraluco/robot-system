@@ -1,4 +1,4 @@
-//! Prompt input state machine and voice hold-to-talk.
+//! Prompt input state machine.
 
 use crate::overlays::SelectorMessage;
 use crate::prompt_input::InputMode;
@@ -61,51 +61,6 @@ impl App {
     pub fn set_prompt_text(&mut self, text: String) {
         self.prompt_input.replace_text(text);
         self.refresh_prompt_input();
-    }
-
-    /// Start PTT recording: open the microphone capture stream and signal the
-    /// UI.  No-op when no voice recorder is attached or recording is already
-    /// in progress.
-    pub fn handle_voice_ptt_start(&mut self) {
-        if self.voice_recording || self.voice_recorder.is_none() {
-            return;
-        }
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        self.voice_event_rx = Some(rx);
-        self.voice_recording = true;
-        if let Some(ref recorder_arc) = self.voice_recorder {
-            let recorder = recorder_arc.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Ok(mut r) = recorder.lock() {
-                    tokio::runtime::Handle::current()
-                        .block_on(r.start_recording(tx))
-                        .ok();
-                }
-            });
-        }
-        self.status_message = Some("Recording\u{2026} release V or press Enter to transcribe".to_string());
-    }
-
-    /// Stop PTT recording: flip the AtomicBool inside VoiceRecorder so the
-    /// capture thread exits, then fire a "Transcribing…" notice.  The
-    /// transcript text arrives later via `voice_event_rx` and is injected into
-    /// the prompt by the event-loop drain.
-    pub fn handle_voice_ptt_stop(&mut self) {
-        if !self.voice_recording {
-            return;
-        }
-        self.voice_recording = false;
-        if let Some(ref recorder_arc) = self.voice_recorder {
-            let recorder = recorder_arc.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Ok(mut r) = recorder.lock() {
-                    tokio::runtime::Handle::current()
-                        .block_on(r.stop_recording())
-                        .ok();
-                }
-            });
-        }
-        self.status_message = Some("Transcribing\u{2026}".to_string());
     }
 
     pub(super) fn clear_prompt(&mut self) {
