@@ -12,9 +12,9 @@
 // parameters; grouping them into structs is a larger refactor out of scope here.
 #![allow(clippy::too_many_arguments)]
 
-mod oauth_flow;
-mod codex_oauth_flow;
-mod upgrade;
+use claurst::codex_oauth_flow;
+use claurst::oauth_flow;
+use claurst::upgrade;
 
 // ---------------------------------------------------------------------------
 // Build-time metadata (embedded via build.rs)
@@ -584,7 +584,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build system prompt
     let mut system_parts = vec![
-        include_str!("system_prompt.txt").to_string(),
+        include_str!("../system_prompt.txt").to_string(),
         system_ctx,
         user_ctx,
     ];
