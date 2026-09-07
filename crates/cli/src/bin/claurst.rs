@@ -3157,11 +3157,10 @@ async fn run_interactive(
                         && !app.history_search_overlay.visible
                         && app.history_search.is_none()
                     {
-                        if app.key_input_dialog.visible {
-                            // Paste into API key input dialog
-                            for ch in data.chars() {
-                                app.key_input_dialog.insert_char(ch);
-                            }
+                        // A visible text-input dialog captures the paste instead of the main prompt input.
+                        if app.handle_dialog_paste(&data) {
+                            // 刷新输入框状态
+                            app.refresh_prompt_input();
                         } else {
                             // Paste into the main prompt through the shared path
                             // so file-path/image pastes and the large-paste

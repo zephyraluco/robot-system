@@ -520,6 +520,21 @@ impl App {
                 KeyCode::Backspace => {
                     self.free_mode_dialog.backspace();
                 }
+                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
+                    // Paste clipboard text into the focused field (terminals
+                    // that don't emit Event::Paste, e.g. Windows Terminal).
+                    if let Some(text) = crate::image_paste::read_clipboard_text() {
+                        if text.is_empty() {
+                            self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
+                        } else {
+                            for ch in text.chars() {
+                                self.free_mode_dialog.insert_char(ch);
+                            }
+                        }
+                    } else {
+                        self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
+                    }
+                }
                 KeyCode::Char(c) => {
                     let c = self.shift_normalize(c, key.modifiers);
                     self.free_mode_dialog.insert_char(c);
@@ -558,6 +573,21 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.custom_provider_dialog.backspace();
+                }
+                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
+                    // Paste clipboard text into the focused field (terminals
+                    // that don't emit Event::Paste, e.g. Windows Terminal).
+                    if let Some(text) = crate::image_paste::read_clipboard_text() {
+                        if text.is_empty() {
+                            self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
+                        } else {
+                            for ch in text.chars() {
+                                self.custom_provider_dialog.insert_char(ch);
+                            }
+                        }
+                    } else {
+                        self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
+                    }
                 }
                 KeyCode::Char(c) => {
                     let c = self.shift_normalize(c, key.modifiers);
@@ -2453,6 +2483,12 @@ impl App {
         if let Some(text) = crate::image_paste::read_primary_text()
             .or_else(crate::image_paste::read_clipboard_text)
         {
+            // A visible text-input dialog captures the paste instead of the
+            // main prompt input.
+            if self.handle_dialog_paste(&text) {
+                self.refresh_prompt_input();
+                return true;
+            }
             self.focus = FocusTarget::Input;
             self.clear_selection();
             self.prompt_input.paste(&text);
@@ -2508,6 +2544,45 @@ impl App {
         }
     }
 
+    /// Route a paste into a visible text-input dialog (Connect Custom URL/API
+    /// key, API-key dialog, free-mode keys, ask-user custom answer, MCP
+    /// elicitation fields).  Returns `true` when a dialog consumed the paste;
+    /// `false` when no text dialog is open and the paste should go to the
+    /// main prompt input instead.
+    pub fn handle_dialog_paste(&mut self, data: &str) -> bool {
+        if self.custom_provider_dialog.visible {
+            for ch in data.chars() {
+                self.custom_provider_dialog.insert_char(ch);
+            }
+            return true;
+        }
+        if self.key_input_dialog.visible {
+            for ch in data.chars() {
+                self.key_input_dialog.insert_char(ch);
+            }
+            return true;
+        }
+        if self.free_mode_dialog.visible {
+            for ch in data.chars() {
+                self.free_mode_dialog.insert_char(ch);
+            }
+            return true;
+        }
+        if self.ask_user_dialog.visible && self.ask_user_dialog.in_custom_input {
+            for ch in data.chars() {
+                self.ask_user_dialog.push_char(ch);
+            }
+            return true;
+        }
+        if self.elicitation.visible {
+            for ch in data.chars() {
+                self.elicitation.insert_char(ch);
+            }
+            return true;
+        }
+        false
+    }
+
     /// Returns `true` when the app is in a state where the prompt can accept
     /// regular text input — used to gate paste-burst detection.
     pub(super) fn prompt_is_accepting_text(&self) -> bool {
@@ -2518,6 +2593,10 @@ impl App {
             && self.history_search.is_none()
             && !self.settings_screen.visible
             && !self.theme_screen.visible
+            && !self.custom_provider_dialog.visible
+            && !self.key_input_dialog.visible
+            && !self.free_mode_dialog.visible
+            && !self.elicitation.visible
             && self.prompt_input.vim_mode == crate::prompt_input::VimMode::Insert
     }
 
