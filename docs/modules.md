@@ -1,175 +1,144 @@
-# Robot System 模块说明
+# Robot System / Claurst Workspace 模块总览
 
-本文说明当前 Rust workspace 中各个 crate 的职责、边界和主要协作关系。
+本文是 Rust workspace 的**总文档**：概述项目结构、各 crate 职责边界、依赖关系与数据流。每个 crate 的详细解析见 `docs/crates/` 下的独立文档（索引见文末）。
 
-## 项目结构
+---
 
-当前项目包含两部分：
+## 1. 项目结构
 
-1. 根 package `robot-system`：面向 Linux 机器人设备的系统管理工具，提供 `rsctl` 和 `rsvm` 两个二进制。
-2. `src/crates` 下的 Claurst 子系统：提供 AI 会话、模型接口、工具调用、TUI 和远程协议能力。
+workspace 包含两部分：
 
-根 package 负责机器人系统安装与服务控制；`src/crates` 下的 crate 负责 Claurst 应用本身。两者共享同一个 Cargo workspace，但职责相对独立。
+1. **根 package `robot-system`**：面向 Linux 机器人设备的系统管理工具。
+2. **`crates/` 下的 Claurst 子系统**（11 个 crate）：AI 编码助手的完整实现——模型接口、工具调用、查询循环、TUI、命令系统、MCP、插件、远程桥接等。
 
-## 根项目二进制
+## 2. 可执行产物（`crates/cli/src/bin/`）
 
-### `rsctl`
+| 二进制 | 职责 | 详细文档 |
+|---|---|---|
+| `claurst` | 主程序：CLI 参数解析、配置装载、MCP 接入、headless 查询、交互式 TUI REPL、OAuth 登录、自升级 | [cli.md](crates/cli.md) |
+| `rsctl` | 机器人系统服务控制（转发 `systemctl`），独立实现、不依赖 claurst_* 库 | [cli.md](crates/cli.md) |
+| `rsvm` | 机器人系统包管理器（读 `/etc/robot-system/robot-system.conf`），独立实现 | [cli.md](crates/cli.md) |
 
-机器人系统服务控制工具。它解析命令行参数，并调用 `systemctl` 对指定的 `<pkg>.service` 执行状态查看、启动、停止和重启操作，同时支持生成 Shell 补全脚本。
+## 3. 库 crate 总览
 
-### `rsvm`
+| Crate | 一句话定位 | 规模 | 详细文档 |
+|---|---|---|---|
+| `claurst-core` | 核心领域层：类型、错误、配置/Settings、权限、认证、会话持久化、成本、记忆（依赖图最底层） | 26,074 行 / 56 文件 | [core.md](crates/core.md) |
+| `claurst-api` | 多 Provider LLM 统一适配层：40+ 上游、流式协议、models.dev 模型目录、TLS 指纹伪装 | 19,303 行 / 34 文件 | [api.md](crates/api.md) |
+| `claurst-tools` | 代理工具系统：shell/文件/搜索/Web/任务/团队等全部 LLM 可调用工具 | 12,686 行 | [tools.md](crates/tools.md) |
+| `claurst-query` | agentic 查询循环：流式处理、工具派发、auto-compact、预算、goal 续航 | 10,406 行 / 16 文件 | [query.md](crates/query.md) |
+| `claurst-tui` | 终端 UI：渲染、输入、overlay/对话框、吉祥物动画 | 45,620 行（最大） | [tui.md](crates/tui.md) |
+| `claurst-commands` | slash 命令系统（102 个注册命令）+ named command 框架 | 13,148 行 / 37 文件 | [commands.md](crates/commands.md) |
+| `claurst-mcp` | MCP 客户端：JSON-RPC、stdio/HTTP/SSE 传输、OAuth、多服务器管理与重连 | 4,407 行 / 6 文件 | [mcp.md](crates/mcp.md) |
+| `claurst-bridge` | 远程控制桥：本地 CLI ↔ claude.ai Web UI 的双向长轮询桥 | 1,710 行（单文件） | [bridge.md](crates/bridge.md) |
+| `claurst-plugins` | 插件运行时：发现/manifest/hooks/能力强制/marketplace | 2,649 行 / 7 文件 | [plugins.md](crates/plugins.md) |
+| `claurst-buddy` | 电子宠物伴侣系统（确定性生成 + AI 灵魂），尚未接线到 UI | 1,118 行（单文件） | [buddy.md](crates/buddy.md) |
+| `claurst`（crates/cli） | 装配层主程序 crate（见上文可执行产物） | 主 bin 4,899 行 | [cli.md](crates/cli.md) |
 
-机器人系统版本和组件管理工具。它读取 `/etc/robot-system/robot-system.conf`，负责组件版本查看、Debian 软件包安装、安装历史查询、服务文件重新加载和系统初始化。
-
-## Claurst crate 总览
-
-| Crate | 主要职责 |
-| --- | --- |
-| `claurst-core` | 核心状态、配置、会话、认证、权限、记忆和基础业务能力 |
-| `claurst-api` | 与模型供应商和远程 API 通信，处理请求、流式响应和协议转换 |
-| `claurst-tools` | 工具定义、工具执行和工具调用结果管理 |
-| `claurst-query` | 查询/提示词编排和会话交互逻辑 |
-| `claurst-tui` | 终端用户界面、输入处理、消息展示和交互状态 |
-| `claurst-commands` | CLI 命令实现和命令到核心能力的编排 |
-| `claurst-mcp` | Model Context Protocol 集成和 MCP 工具/服务器管理 |
-| `claurst-bridge` | 本地 Claurst 与 Web UI 之间的远程会话桥接 |
-| `claurst-plugins` | 插件运行时和插件生命周期管理 |
-| `claurst-buddy` | Buddy 辅助能力及其数据/状态处理 |
-| `claurst` | Claurst 主 CLI，组装各个 crate 并启动应用 |
-
-## 各模块职责
-
-### `claurst-core`：核心领域层
-
-`core` 是 Claurst 的基础领域模块，为其他 crate 提供稳定的底层能力，包括：
-
-- 账户、认证存储、OAuth 和 provider 标识管理
-- 会话、远程会话、云端会话和提示词历史
-- 配置路径、迁移、导入配置和用户设置
-- 上下文压缩、消息处理、输出样式和 token/effort 管理
-- 文件历史、记忆目录、目标管理和功能开关
-- MCP 信任、LSP、IDE 集成及 Bash/PowerShell 分类
-- 加密工具、设备码和其他通用基础设施
-
-它应尽量不依赖 UI，属于整个应用的核心状态和领域能力层。
-
-### `claurst-api`：模型与远程 API 层
-
-`api` 负责把 Claurst 的内部请求转换成不同模型供应商所需的 HTTP/API 格式，并把响应转换回统一结构。主要包含：
-
-- provider 注册、模型注册和 provider 类型
-- Anthropic、OpenAI/Codex 等供应商适配
-- 请求转换、响应转换和流式响应解析
-- 认证、错误处理、provider 错误和 effort 支持
-- HTTP 客户端、TLS、JSON、SSE/流式数据处理
-
-该层处理“如何访问模型”，但不负责终端界面或完整会话编排。
-
-### `claurst-tools`：工具执行层
-
-`tools` 为模型提供可调用的本地工具，并负责工具调用的执行、权限和结果回传。它位于模型 API 与核心应用之间，把模型发出的工具请求连接到文件、命令、搜索、浏览器或其他运行时能力。
-
-### `claurst-query`：查询与会话编排层
-
-`query` 负责组织用户输入、上下文、模型请求和响应处理，是一次查询/对话流程的编排层。它连接 `core`、`api`、`tools` 和 `mcp`，使一次用户请求能够完成：
-
-```text
-用户输入 -> 上下文组装 -> 模型请求 -> 流式响应 -> 工具调用 -> 最终结果
-```
-
-### `claurst-tui`：终端 UI 层
-
-`tui` 负责终端中的可视化交互，包括消息渲染、输入编辑、滚动、状态提示、快捷操作、代码高亮和工具输出展示。它依赖核心状态与查询流程，但不应把 provider 的具体 HTTP 细节直接放入 UI。
-
-该 crate 还提供若干可选功能，例如历史选择器、快速搜索、远程桥接模式、记忆和 agent 相关能力。
-
-### `claurst-commands`：命令实现层
-
-`commands` 实现 Claurst 的命令集合，并负责把命令参数转换成核心服务调用。其职责包括：
-
-- 账户、认证、provider 和模型配置
-- 会话、历史、搜索、导出、分享和统计
-- 权限、沙箱、MCP、插件和托管 agent 管理
-- 目标、记忆、远程会话和 UI 设置
-- 诊断、doctor、维护和升级相关操作
-
-它是命令行为的集中位置，主 CLI 主要负责解析参数和调用这里的实现。
-
-### `claurst-mcp`：MCP 集成层
-
-`mcp` 负责 Model Context Protocol 集成，管理 MCP server、工具发现、连接和调用结果，并处理 MCP 配置与信任边界。它让外部 MCP 工具能够以统一方式加入 Claurst 的工具调用流程。
-
-### `claurst-bridge`：远程会话桥接层
-
-`bridge` 连接本地 Claurst 与 claude.ai/Web UI，提供：
-
-- 远程会话注册和注销
-- Web UI 到本地的长轮询消息接收
-- 本地事件向 Web UI 的批量上传
-- 权限决定和会话事件传输
-- 断线重连、指数退避和取消机制
-- 设备指纹、桥接配置和 JWT 过期时间解析
-
-它是专用的远程会话协议适配层，不是通用网络代理。JWT 在该模块中只做解析、过期检查和展示用途，不用于授权决策。
-
-### `claurst-plugins`：插件运行时
-
-`plugins` 提供插件的发现、加载、运行和生命周期管理能力，使 Claurst 可以扩展命令、工具或其他集成，而不必把所有功能编译进核心模块。
-
-### `claurst-buddy`：Buddy 辅助模块
-
-`buddy` 提供 Buddy 相关的辅助数据结构和状态处理能力，并依赖 `core` 使用核心配置/领域类型。它是独立的辅助能力 crate，不负责主 CLI 的启动和终端绘制。
-
-### `claurst`：主 CLI 入口
-
-`cli` crate 的 package 名称为 `claurst`。它负责：
-
-- 初始化运行时和应用依赖
-- 解析启动参数和全局选项
-- 组装 `core`、`api`、`commands`、`tui` 和其他终端运行所需模块
-- 启动交互式 TUI 或非交互命令
-- 处理 OAuth、Codex OAuth 和升级流程
-
-它是应用组合根，业务实现应尽量放在对应功能 crate 中。
-
-## 依赖方向
+## 4. 依赖关系图
 
 ```mermaid
 graph TD
-    CLI[claurst CLI] --> TUI[claurst-tui]
-    CLI --> COMMANDS[claurst-commands]
-    CLI --> BRIDGE[claurst-bridge]
-    COMMANDS --> CORE[claurst-core]
-    COMMANDS --> API[claurst-api]
-    COMMANDS --> TOOLS[claurst-tools]
-    TUI --> QUERY[claurst-query]
-    TUI --> CORE
-    QUERY --> API
-    QUERY --> TOOLS
-    QUERY --> CORE
-    TOOLS --> CORE
-    MCP[claurst-mcp] --> TOOLS
+    CORE[claurst-core<br/>类型/配置/权限/认证/会话/成本]
+    API[claurst-api<br/>多 provider LLM 适配]
+    MCP[claurst-mcp<br/>MCP 客户端]
+    PLUGINS[claurst-plugins<br/>插件运行时]
+    TOOLS[claurst-tools<br/>工具实现]
+    QUERY[claurst-query<br/>查询循环]
+    TUI[claurst-tui<br/>终端 UI]
+    CMD[claurst-commands<br/>斜杠命令]
+    BRIDGE[claurst-bridge<br/>远程桥]
+    BUDDY[claurst-buddy<br/>电子宠物]
+    BIN[claurst 主二进制<br/>crates/cli]
+
+    API --> CORE
     MCP --> CORE
-    BRIDGE --> API
-    BRIDGE --> QUERY
-    BRIDGE --> CORE
-    PLUGINS[claurst-plugins] --> CORE
+    PLUGINS --> CORE
+    BUDDY --> CORE
+    BRIDGE --> CORE & API & QUERY
+    TOOLS --> CORE & API & MCP
+    QUERY --> CORE & API & PLUGINS & TOOLS
+    TUI --> CORE & API & TOOLS & QUERY & MCP
+    CMD --> CORE & API & TOOLS & QUERY & MCP & TUI & PLUGINS & BRIDGE
+    BIN --> CORE & API & TOOLS & QUERY & TUI & CMD & MCP & BRIDGE & PLUGINS
 ```
 
-## 一次交互的大致流程
+要点：
+- **`claurst-core` 是唯一底座**——其余 10 个 crate 全部直接依赖它，自身零内部依赖。
+- **`tools` 不依赖 `query`**——`AgentTool` 放在 query 层以避免 `tools→query→tools` 循环依赖。
+- **`commands ↔ tui` 单向依赖**：commands 调 tui 的纯函数（slash 解析、HelpEntry），tui 不调 commands；命令执行统一在 CLI 层。
+- **`claurst-buddy` 目前无人依赖**（待接线彩蛋库）。
+- core 的 36 个编译期 feature 由 tui/commands 以同名 feature 转发联动。
 
-1. `claurst` 解析启动参数并创建运行时。
-2. `tui` 或 `commands` 接收用户输入。
-3. `query` 从 `core` 获取配置、历史和上下文。
-4. `api` 将请求发送给选定的模型 provider。
-5. 模型需要工具时，由 `tools` 或 `mcp` 执行并返回结果。
-6. `query` 汇总流式响应和工具结果。
-7. `tui` 渲染结果；headless 模式则将结果输出到标准输出。
+## 5. 运行时数据流（交互模式）
 
-## 构建提示
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant TUI as claurst-tui (App::run)
+    participant CLI as claurst 二进制 (run_interactive)
+    participant Q as claurst-query (run_query_loop)
+    participant TO as claurst-tools
+    participant A as claurst-api
+    participant M as claurst-mcp
 
-可以构建全部 workspace：
-
-```bash
-cargo build --workspace --no-default-features
+    U->>TUI: 键入消息（prompt_input）
+    TUI->>CLI: run() 返回提交文本 / 键鼠事件
+    CLI->>Q: run_query_loop(messages, tools, config)
+    Q->>A: create_message_stream（ProviderRegistry 派发）
+    A-->>Q: StreamEvent（归一为 AnthropicStreamEvent）
+    Q-->>TUI: QueryEvent（Stream/ToolStart/TurnComplete/TokenWarning）
+    Q->>TO: run_tool_batch（权限 backstop + 并发执行）
+    TO->>M: MCP 工具调用（经 McpManager）
+    TO-->>TUI: UserQuestionEvent / PendingPermission（弹窗裁决）
+    TO-->>Q: ToolResult 回灌 → 下一 turn
+    Q-->>CLI: QueryOutcome（EndTurn/Cancelled/BudgetExceeded）
 ```
+
+## 6. 分层架构
+
+```text
+┌─────────────────────────────────────────────────────┐
+│  claurst 二进制（装配：参数解析/REPL/headless）        │
+├──────────────────────────┬──────────────────────────┤
+│  claurst-tui（交互渲染）  │ claurst-commands（命令语义）│
+├──────────────────────────┴──────────────────────────┤
+│  claurst-query（agentic 循环）  claurst-bridge（远控） │
+├─────────────────────────────────────────────────────┤
+│  claurst-tools（工具实现）                            │
+├───────────────────────┬─────────────────────────────┤
+│  claurst-api（LLM 适配）│ claurst-mcp   claurst-plugins│
+├───────────────────────┴─────────────────────────────┤
+│  claurst-core（类型/配置/权限/认证/会话/成本）          │
+└─────────────────────────────────────────────────────┘
+（claurst-buddy：独立挂在 core 之上，待接入）
+```
+
+## 7. 跨 crate 契约点
+
+| 契约 | 说明 |
+|---|---|
+| `AnthropicStreamEvent`（api） | TUI 消费流的事实标准事件类型；query 负责把所有 provider 归一到它 |
+| `Tool` / `ToolContext` / `ToolResult`（tools） | 工具统一抽象；MCP 工具由 cli 用 `McpToolWrapper` 包装成原生 Tool |
+| 权限三件套（core） | `PermissionHandler`/`PermissionRequest`/`PermissionDecision`——tools/query/tui 共用 |
+| 交互通道三件套 | `QueryEvent`（query→TUI）、`UserQuestionEvent`（tools⇄TUI）、`PendingPermissionStore`（tools→TUI 弹窗 oneshot 决策） |
+| `CostTracker`（core） | 贯穿 tools 上下文、query 循环、TUI 显示 |
+| `ShadowSnapshot`（core） | auto_commits 的 per-turn 文件变更快照（/undo、/revert 依赖） |
+| `EffortLevel`（core） | 全 workspace 唯一推理力度枚举 |
+| `Settings::config_dir()`（core） | 全 workspace 配置主目录唯一解析点 |
+
+## 8. 详细文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [crates/core.md](crates/core.md) | 核心领域层：lib.rs 11 个内联模块、config/permissions 详解、56 文件分组清单、36 个 feature |
+| [crates/api.md](crates/api.md) | 6 个核心 trait、protocol/providers/transformers 子目录、35+ 兼容厂商、free 回退链、TLS 伪装 |
+| [crates/tools.md](crates/tools.md) | Tool trait、权限三层模型、约 40 个工具分类清单 |
+| [crates/query.md](crates/query.md) | run_query_loop 14 步主流程、QueryConfig/Event/Outcome、compact/sanitize/goal/cron 等模块 |
+| [crates/tui.md](crates/tui.md) | run loop、`App` 结构体逐字段解析（约 170 个字段，15 个功能区块）、渲染层、30+ 对话框/overlay 清单 |
+| [crates/commands.md](crates/commands.md) | SlashCommand/NamedCommand 双 trait、四级命令来源、全部命令分组清单 |
+| [crates/cli.md](crates/cli.md) | 三个二进制、build.rs、OAuth/升级流程、40+ CLI 选项 |
+| [crates/mcp.md](crates/mcp.md) | McpClient/McpManager、backend 抽象、协议版本协商、OAuth/信任 |
+| [crates/bridge.md](crates/bridge.md) | BridgeMessage/BridgeEvent 协议、轮询任务、TUI 集成 |
+| [crates/plugins.md](crates/plugins.md) | manifest、27 种 hook 事件、能力强制、marketplace |
+| [crates/buddy.md](crates/buddy.md) | 确定性骨骼/AI 灵魂、18 物种精灵图、待接线状态 |
