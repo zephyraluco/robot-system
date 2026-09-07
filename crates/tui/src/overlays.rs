@@ -17,7 +17,6 @@ pub const CLAURST_PANEL_BG: Color = Color::Rgb(20, 20, 28);
 pub const CLAURST_PANEL_BORDER: Color = Color::Rgb(72, 72, 80);
 pub const CLAURST_TEXT: Color = Color::Rgb(235, 235, 240);
 pub const CLAURST_MUTED: Color = Color::Rgb(110, 110, 118);
-pub const CLAURST_OVERLAY_BG: Color = Color::Rgb(10, 10, 14);
 
 // ---------------------------------------------------------------------------
 // Geometry helper (shared)
@@ -49,7 +48,7 @@ pub fn render_dark_overlay_buf(buf: &mut Buffer, area: Rect) {
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_bg(CLAURST_OVERLAY_BG);
+                // cell.set_bg(CLAURST_OVERLAY_BG);
                 cell.set_fg(CLAURST_MUTED);
             }
         }
