@@ -535,10 +535,12 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     let size = frame.area();
     app.last_selectable_area.set(size);
 
-    // Fill the entire frame with a black background so the terminal's default
-    // color (blue on Windows) doesn't bleed through cells not covered by widgets.
+    // Fill the entire frame with the terminal's default background so the
+    // user's terminal theme shows through. `Color::Reset` emits the SGR
+    // default-background sequence instead of a hard-coded color, so cells not
+    // covered by widgets stay transparent rather than forcing black.
     frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Black).fg(Color::White)),
+        Block::default().style(Style::default().bg(Color::Reset).fg(Color::White)),
         size,
     );
 
@@ -3201,7 +3203,7 @@ pub fn render_full_status_line(data: &StatusLineData, area: Rect, buf: &mut rata
 
     let line = Line::from(spans);
     Paragraph::new(line)
-        .style(Style::default().bg(Color::Black))
+        .style(Style::default().bg(Color::Reset))
         .render(area, buf);
 }
 

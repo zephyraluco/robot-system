@@ -33,19 +33,19 @@ fn body_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Eye-row style: pink text on black background.
+/// Eye-row style: pink text on the terminal's default background.
 fn eye_bg_style() -> Style {
     Style::default()
         .fg(Color::Rgb(233, 30, 99))
-        .bg(Color::Black)
+        .bg(Color::Reset)
         .add_modifier(Modifier::BOLD)
 }
 
-/// Eyeball highlight style: white on black.
+/// Eyeball highlight style: white on the terminal's default background.
 fn eyeball_style() -> Style {
     Style::default()
         .fg(Color::White)
-        .bg(Color::Black)
+        .bg(Color::Reset)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -134,22 +134,22 @@ fn loading_eye_spans(frame: u64) -> Vec<Span<'static>> {
         // Left eye: previous (dim) then current (bright)
         Span::styled(
             left_prev_ch.to_string(),
-            Style::default().fg(COLORS[2]).bg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default().fg(COLORS[2]).bg(Color::Reset).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             left_ch.to_string(),
-            Style::default().fg(left_color).bg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default().fg(left_color).bg(Color::Reset).add_modifier(Modifier::BOLD),
         ),
         // Nose
         Span::styled("█".to_string(), eye_bg_style()),
         // Right eye: current (bright) then previous (dim)
         Span::styled(
             right_ch.to_string(),
-            Style::default().fg(right_color).bg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default().fg(right_color).bg(Color::Reset).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             right_prev_ch.to_string(),
-            Style::default().fg(COLORS[2]).bg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default().fg(COLORS[2]).bg(Color::Reset).add_modifier(Modifier::BOLD),
         ),
     ]
 }
