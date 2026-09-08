@@ -2,8 +2,18 @@
 //
 // Used for the /connect provider picker and potentially for future
 // selection dialogs (models, commands, sessions).
+//
+// `DialogSelectState` is built on the generic dialog base (`DialogCore` +
+// `DialogBehavior` in `crate::dialog`): it embeds a `DialogCore` for
+// visibility/geometry and routes keyboard + mouse events through the
+// `DialogBehavior` dispatch pipeline (`handle_key` / `handle_mouse`),
+// while keeping its legacy direct-manipulation methods (move_up, filter_push,
+// …) for callers that have not migrated yet.
 
-use ratatui::layout::Rect;
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -11,9 +21,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::cell::{Cell, RefCell};
 
-use crate::overlays::{
-    centered_rect, modal_search_line, render_dark_overlay, render_dialog_bg, CLAURST_PANEL_BG,
-};
+use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{modal_search_line, ModalLayout, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,8 +41,8 @@ pub struct SelectItem {
 /// State for the DialogSelect overlay.
 #[derive(Debug, Clone)]
 pub struct DialogSelectState {
-    pub visible: bool,
-    pub title: String,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     pub items: Vec<SelectItem>,
     pub selected_index: usize,
     pub filter: String,
@@ -52,20 +61,23 @@ impl DialogSelectState {
     pub fn new(title: impl Into<String>, items: Vec<SelectItem>) -> Self {
         let count = items.len();
         let filtered: Vec<usize> = (0..count).collect();
-        Self {
-            visible: false,
-            title: title.into(),
+        // 3 header rows (title / blank / search), no footer, body holds the
+        // items; the height adapts to the filtered content via `sync_size`.
+        let mut state = Self {
+            core: DialogCore::new(title, 65, 20).header_height(3).footer_height(0),
             items,
             selected_index: 0,
             filter: String::new(),
             filtered_indices: filtered,
             last_render_area: Cell::new(Rect::default()),
             row_to_item: RefCell::new(Vec::new()),
-        }
+        };
+        state.sync_size();
+        state
     }
 
     pub fn open(&mut self) {
-        self.visible = true;
+        self.core.open();
         self.selected_index = 0;
         self.filter.clear();
         self.refilter();
@@ -74,7 +86,21 @@ impl DialogSelectState {
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
+
+    /// Take the currently selected item and close the dialog. Used by callers
+    /// that dispatch through the `DialogBehavior` pipeline: when
+    /// `handle_key` returns `DialogOutcome::Confirmed` (Enter), the confirmed
+    /// item is consumed here.
+    pub fn take_selected(&mut self) -> Option<SelectItem> {
+        let item = self.selected().cloned();
+        self.close();
+        item
     }
 
     pub fn move_up(&mut self) {
@@ -179,238 +205,319 @@ impl DialogSelectState {
         if self.selected_index >= self.filtered_indices.len() {
             self.selected_index = self.filtered_indices.len().saturating_sub(1);
         }
+        // The dialog height adapts to the filtered content.
+        self.sync_size();
+    }
+
+    /// Push the content-derived height into the embedded `DialogCore` so the
+    /// shared `render` pipeline sizes the modal accordingly (the height is
+    /// still clamped to the screen by `begin_modal_frame`).
+    fn sync_size(&mut self) {
+        let height = self.content_height();
+        self.core.set_size(65, height);
+    }
+
+    /// Total painted line count: header (title + blank + search) + items +
+    /// category headers + gaps; floored at 8 so the dialog never collapses.
+    fn content_height(&self) -> u16 {
+        let item_lines = self.filtered_indices.len() as u16;
+        let category_count = if self.filter.is_empty() {
+            let mut sections = 0u16;
+            let mut last_category: Option<&str> = None;
+            for &idx in &self.filtered_indices {
+                let category = self.items[idx].category.as_str();
+                if last_category != Some(category) {
+                    sections += 1;
+                    last_category = Some(category);
+                }
+            }
+            sections
+        } else {
+            0
+        };
+        (3 + item_lines + category_count * 2).max(8)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// DialogBehavior — generic key/mouse capture pipeline
 // ---------------------------------------------------------------------------
 
-/// Render the DialogSelect overlay — OpenCode-style: dark overlay, no border,
-/// full-width highlight bar on selected item, minimal and polished.
-pub fn render_dialog_select(frame: &mut Frame, state: &DialogSelectState, area: Rect) {
-    if !state.visible {
-        return;
+impl DialogBehavior for DialogSelectState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    let dim = Color::Rgb(90, 90, 90);
-    let dialog_bg = CLAURST_PANEL_BG;
-    let highlight_bg = Color::Rgb(233, 30, 99); // pink highlight bar
-    let highlight_fg = Color::White;
-    let category_fg = Color::Rgb(233, 30, 99); // pink category names
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    // ── Darken the entire background ──
-    render_dark_overlay(frame, area);
+    fn focus_zones(&self) -> usize {
+        1
+    }
 
-    // ── Dialog size: 65 wide, fit content ──
-    let width = 65u16.min(area.width.saturating_sub(6));
-    let max_height = (area.height as f32 * 0.75) as u16;
-    // Count visible lines: header(2) + items + category gaps + footer(0)
-    let item_lines: u16 = state.filtered_indices.len() as u16;
-    let category_count = if state.filter.is_empty() {
-        let mut sections = 0u16;
-        let mut last_category: Option<&str> = None;
-        for &idx in &state.filtered_indices {
-            let category = state.items[idx].category.as_str();
-            if last_category != Some(category) {
-                sections += 1;
-                last_category = Some(category);
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: Esc is consumed by the dispatch pipeline (→ Cancelled) before
+        // this hook runs.
+        match key.code {
+            KeyCode::Home => {
+                self.move_home();
+                DialogOutcome::Handled
             }
-        }
-        sections
-    } else {
-        0
-    };
-    let content_height = 3 + item_lines + category_count * 2; // search + blank + items + cat headers + gaps
-    let height = content_height.min(max_height).max(8);
-    let dialog_area = centered_rect(width, height, area);
-
-    state.last_render_area.set(dialog_area);
-
-    // ── Fill dialog background (no border) ──
-    render_dialog_bg(frame, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let header_height = 3u16.min(inner.height);
-    let header_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: header_height,
-    };
-    let body_area = Rect {
-        x: inner.x,
-        y: inner.y.saturating_add(header_height),
-        width: inner.width,
-        height: inner.height.saturating_sub(header_height),
-    };
-
-    // ── Fixed header ──
-    let mut header_lines: Vec<Line<'static>> = Vec::new();
-
-    // Title row: "Connect a provider" on left, "esc" on right
-    let title_pad = inner.width.saturating_sub(state.title.len() as u16 + 4) as usize;
-    header_lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {}", state.title),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{:>width$}", "esc ", width = title_pad),
-            Style::default().fg(dim),
-        ),
-    ]));
-
-    // Search field
-    header_lines.push(Line::from(""));
-    header_lines.push(modal_search_line(
-        &state.filter,
-        "Search",
-        dim,
-        Color::White,
-    ));
-
-    frame.render_widget(Paragraph::new(header_lines).bg(dialog_bg), header_area);
-
-    if body_area.height == 0 {
-        return;
-    }
-
-    // ── Scrollable items ──
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut row_map: Vec<(u16, usize)> = Vec::new();
-    let mut current_line: u16 = 0;
-    let mut last_category = String::new();
-
-    for (display_idx, &item_idx) in state.filtered_indices.iter().enumerate() {
-        let item = &state.items[item_idx];
-        let is_selected = display_idx == state.selected_index;
-
-        // Category header (only when not filtering)
-        if item.category != last_category && state.filter.is_empty() {
-            lines.push(Line::from(""));
-            current_line += 1;
-            lines.push(Line::from(vec![Span::styled(
-                format!(" {}", item.category),
-                Style::default()
-                    .fg(category_fg)
-                    .add_modifier(Modifier::BOLD),
-            )]));
-            current_line += 1;
-            last_category = item.category.clone();
-        }
-
-        // Item — full-width highlight bar when selected
-        let (item_fg, item_bg) = if is_selected {
-            (highlight_fg, highlight_bg)
-        } else {
-            (Color::White, dialog_bg)
-        };
-
-        let mut spans = vec![Span::styled(
-            format!(" {}", item.title),
-            Style::default().fg(item_fg).bg(item_bg),
-        )];
-
-        // Auth hint in parens, dimmed
-        if !item.description.is_empty() {
-            spans.push(Span::styled(
-                format!(" {}", item.description),
-                Style::default()
-                    .fg(if is_selected {
-                        Color::Rgb(200, 200, 200)
-                    } else {
-                        dim
-                    })
-                    .bg(item_bg),
-            ));
-        }
-
-        let badge_text = item.badge.clone().unwrap_or_default();
-        let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
-        let badge_len = if badge_text.is_empty() {
-            0
-        } else {
-            badge_text.len() + 1
-        };
-        let pad = inner
-            .width
-            .saturating_sub(text_len as u16 + badge_len as u16) as usize;
-        if pad > 0 {
-            spans.push(Span::styled(" ".repeat(pad), Style::default().bg(item_bg)));
-        }
-        if !badge_text.is_empty() {
-            spans.push(Span::styled(
-                format!(" {}", badge_text),
-                Style::default()
-                    .fg(if is_selected { highlight_fg } else { dim })
-                    .bg(item_bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        row_map.push((body_area.y + current_line, display_idx));
-        lines.push(Line::from(spans));
-        current_line += 1;
-    }
-
-    if state.filtered_indices.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            " No results found",
-            Style::default().fg(dim),
-        )]));
-    }
-
-    // ── Scroll ──
-    let selected_item_line: u16 = {
-        let mut line_num: u16 = 0;
-        let mut last_cat = String::new();
-        for (display_idx, &item_idx) in state.filtered_indices.iter().enumerate() {
-            let item = &state.items[item_idx];
-            if item.category != last_cat && state.filter.is_empty() {
-                line_num += 2; // blank line + category header
-                last_cat = item.category.clone();
+            KeyCode::End => {
+                self.move_end();
+                DialogOutcome::Handled
             }
-            if display_idx == state.selected_index {
-                break;
+            KeyCode::Up => {
+                self.move_up();
+                DialogOutcome::Handled
             }
-            line_num += 1;
+            KeyCode::Down => {
+                self.move_down();
+                DialogOutcome::Handled
+            }
+            KeyCode::PageUp => {
+                self.page_up();
+                DialogOutcome::Handled
+            }
+            KeyCode::PageDown => {
+                self.page_down();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_up();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_down();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => {
+                // Confirm only when there is a selection; otherwise stay open.
+                if self.selected().is_some() {
+                    self.close();
+                    DialogOutcome::Confirmed
+                } else {
+                    DialogOutcome::Ignored
+                }
+            }
+            KeyCode::Backspace => {
+                self.filter_pop();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                // Plain typing only: modified chars (Ctrl+V, Ctrl+C, …) are
+                // shortcuts, not filter input. Modal capture still swallows
+                // them so they never reach the UI underneath.
+                self.filter_push(c);
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
         }
-        line_num
-    };
-    let total_lines = lines.len() as u16;
-    let visible = body_area.height;
-    let max_scroll = total_lines.saturating_sub(visible);
-    let scroll_y = if selected_item_line + 3 >= visible {
-        (selected_item_line + 3).saturating_sub(visible).min(max_scroll)
-    } else {
-        0
-    };
+    }
 
-    *state.row_to_item.borrow_mut() = row_map
-        .into_iter()
-        .filter_map(|(row, idx)| {
-            let screen_row = row.saturating_sub(scroll_y);
-            if screen_row >= body_area.y
-                && screen_row < body_area.y.saturating_add(body_area.height)
-            {
-                Some((screen_row, idx))
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Pixel-accurate item selection via the row→item map built
+                // during the last render. Clicks elsewhere inside the dialog
+                // are absorbed.
+                self.handle_mouse_click(mouse.row);
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollUp => {
+                self.move_up();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_down();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let dim = Color::Rgb(90, 90, 90);
+        let dialog_bg = CLAURST_PANEL_BG;
+        let highlight_bg = Color::Rgb(233, 30, 99); // pink highlight bar
+        let highlight_fg = Color::White;
+        let category_fg = Color::Rgb(233, 30, 99); // pink category names
+
+        let dialog_area = layout.dialog_area;
+        self.last_render_area.set(dialog_area);
+
+        let header_area = layout.header_area;
+        let body_area = layout.body_area;
+
+        // ── Header extras (the shared `render` already drew the title on row 0) ──
+        // "esc" hint, right-aligned on the title row.
+        if header_area.height > 0 && header_area.width > 4 {
+            let esc_area = Rect {
+                height: 1,
+                ..header_area
+            };
+            frame.render_widget(
+                Paragraph::new("esc ")
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(dim)),
+                esc_area,
+            );
+        }
+        // Search field on the third header row (row 1 stays blank).
+        if header_area.height >= 3 {
+            let search_area = Rect {
+                y: header_area.y + 2,
+                height: 1,
+                ..header_area
+            };
+            frame.render_widget(
+                Paragraph::new(modal_search_line(
+                    &self.filter,
+                    "Search",
+                    dim,
+                    Color::White,
+                ))
+                .bg(dialog_bg),
+                search_area,
+            );
+        }
+
+        if body_area.height == 0 {
+            return;
+        }
+
+        // ── Scrollable items ──
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut row_map: Vec<(u16, usize)> = Vec::new();
+        let mut current_line: u16 = 0;
+        let mut last_category = String::new();
+
+        for (display_idx, &item_idx) in self.filtered_indices.iter().enumerate() {
+            let item = &self.items[item_idx];
+            let is_selected = display_idx == self.selected_index;
+
+            // Category header (only when not filtering)
+            if item.category != last_category && self.filter.is_empty() {
+                lines.push(Line::from(""));
+                current_line += 1;
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {}", item.category),
+                    Style::default()
+                        .fg(category_fg)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                current_line += 1;
+                last_category = item.category.clone();
+            }
+
+            // Item — full-width highlight bar when selected
+            let (item_fg, item_bg) = if is_selected {
+                (highlight_fg, highlight_bg)
             } else {
-                None
-            }
-        })
-        .collect();
+                (Color::White, dialog_bg)
+            };
 
-    let para = Paragraph::new(lines).bg(dialog_bg).scroll((scroll_y, 0));
-    frame.render_widget(para, body_area);
+            let mut spans = vec![Span::styled(
+                format!(" {}", item.title),
+                Style::default().fg(item_fg).bg(item_bg),
+            )];
+
+            // Auth hint in parens, dimmed
+            if !item.description.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", item.description),
+                    Style::default()
+                        .fg(if is_selected {
+                            Color::Rgb(200, 200, 200)
+                        } else {
+                            dim
+                        })
+                        .bg(item_bg),
+                ));
+            }
+
+            let badge_text = item.badge.clone().unwrap_or_default();
+            let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+            let badge_len = if badge_text.is_empty() {
+                0
+            } else {
+                badge_text.len() + 1
+            };
+            let pad = body_area
+                .width
+                .saturating_sub(text_len as u16 + badge_len as u16) as usize;
+            if pad > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(pad),
+                    Style::default().bg(item_bg),
+                ));
+            }
+            if !badge_text.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", badge_text),
+                    Style::default()
+                        .fg(if is_selected { highlight_fg } else { dim })
+                        .bg(item_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            row_map.push((body_area.y + current_line, display_idx));
+            lines.push(Line::from(spans));
+            current_line += 1;
+        }
+
+        if self.filtered_indices.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                " No results found",
+                Style::default().fg(dim),
+            )]));
+        }
+
+        // ── Scroll ──
+        let selected_item_line: u16 = {
+            let mut line_num: u16 = 0;
+            let mut last_cat = String::new();
+            for (display_idx, &item_idx) in self.filtered_indices.iter().enumerate() {
+                let item = &self.items[item_idx];
+                if item.category != last_cat && self.filter.is_empty() {
+                    line_num += 2; // blank line + category header
+                    last_cat = item.category.clone();
+                }
+                if display_idx == self.selected_index {
+                    break;
+                }
+                line_num += 1;
+            }
+            line_num
+        };
+        let total_lines = lines.len() as u16;
+        let visible = body_area.height;
+        let max_scroll = total_lines.saturating_sub(visible);
+        let scroll_y = if selected_item_line + 3 >= visible {
+            (selected_item_line + 3).saturating_sub(visible).min(max_scroll)
+        } else {
+            0
+        };
+
+        *self.row_to_item.borrow_mut() = row_map
+            .into_iter()
+            .filter_map(|(row, idx)| {
+                let screen_row = row.saturating_sub(scroll_y);
+                if screen_row >= body_area.y
+                    && screen_row < body_area.y.saturating_add(body_area.height)
+                {
+                    Some((screen_row, idx))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let para = Paragraph::new(lines).bg(dialog_bg).scroll((scroll_y, 0));
+        frame.render_widget(para, body_area);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +559,7 @@ mod tests {
     #[test]
     fn new_state_is_hidden() {
         let state = DialogSelectState::new("Test", sample_items());
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert_eq!(state.selected_index, 0);
         assert!(state.filter.is_empty());
     }
@@ -461,7 +568,7 @@ mod tests {
     fn open_sets_visible() {
         let mut state = DialogSelectState::new("Test", sample_items());
         state.open();
-        assert!(state.visible);
+        assert!(state.is_visible());
     }
 
     #[test]
@@ -469,7 +576,7 @@ mod tests {
         let mut state = DialogSelectState::new("Test", sample_items());
         state.open();
         state.close();
-        assert!(!state.visible);
+        assert!(!state.is_visible());
     }
 
     #[test]
@@ -538,6 +645,74 @@ mod tests {
         assert_eq!(state.selected_index, 0);
     }
 
+    // -----------------------------------------------------------------------
+    // DialogBehavior pipeline tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipeline_esc_cancels_and_closes() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        state.open();
+        let out = state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(out, DialogOutcome::Cancelled);
+        assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn pipeline_enter_confirms_and_take_selected() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        state.open();
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let out = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(out, DialogOutcome::Confirmed);
+        assert!(!state.is_visible());
+        let selected = state.take_selected().unwrap();
+        assert_eq!(selected.id, "openai");
+    }
+
+    #[test]
+    fn pipeline_filter_typing_and_backspace() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        state.open();
+        for c in "local".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(state.selected().unwrap().id, "ollama");
+        state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(state.filter.ends_with('a'));
+    }
+
+    #[test]
+    fn pipeline_navigation_keys_move_selection() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        state.open();
+        state.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(state.selected().unwrap().id, "ollama");
+        state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.selected_index, 1);
+        state.handle_key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(state.selected_index, 0);
+    }
+
+    #[test]
+    fn pipeline_modal_swallows_unknown_keys() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        state.open();
+        let out = state.handle_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE));
+        assert_eq!(out, DialogOutcome::Handled);
+        assert!(state.is_visible());
+    }
+
+    #[test]
+    fn pipeline_invisible_ignores_input() {
+        let mut state = DialogSelectState::new("Test", sample_items());
+        let out = state.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(out, DialogOutcome::Ignored);
+    }
+
     #[test]
     fn home_and_end_jump_to_edges() {
         let mut state = DialogSelectState::new("Test", sample_items());
@@ -555,7 +730,7 @@ mod tests {
         state.open();
         terminal
             .draw(|frame| {
-                render_dialog_select(frame, &state, frame.area());
+                state.render(frame, frame.area());
             })
             .unwrap();
     }
@@ -593,7 +768,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                render_dialog_select(frame, &state, frame.area());
+                state.render(frame, frame.area());
             })
             .unwrap();
 
@@ -613,7 +788,7 @@ mod tests {
         let before = terminal.backend().buffer().clone();
         terminal
             .draw(|frame| {
-                render_dialog_select(frame, &state, frame.area());
+                state.render(frame, frame.area());
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer().content(), before.content());

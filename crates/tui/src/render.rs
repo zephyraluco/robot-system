@@ -8,7 +8,7 @@ use crate::export_dialog::render_export_dialog;
 use crate::app::{App, ContextMenuKind, SystemAnnotation, SystemMessageStyle, ToolStatus};
 use crate::rustle::rustle_lines;
 use crate::diff_viewer::render_diff_dialog;
-use crate::model_picker::render_model_picker;
+use crate::dialog::DialogBehavior as _;
 use crate::session_browser::render_session_browser;
 use crate::session_branching::render_session_branching;
 use crate::tasks_overlay::render_tasks_overlay;
@@ -23,7 +23,6 @@ use crate::bypass_permissions_dialog::render_bypass_permissions_dialog;
 use crate::file_injection_dialog::render_file_injection_dialog;
 use crate::ask_user_dialog::render_ask_user_dialog;
 use crate::onboarding_dialog::render_onboarding_dialog;
-use crate::dialog_select::render_dialog_select;
 use crate::key_input_dialog::render_key_input_dialog;
 use crate::custom_provider_dialog::render_custom_provider_dialog;
 use crate::device_auth_dialog::render_device_auth_dialog;
@@ -776,13 +775,13 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     // area (see the input dispatch above), replacing the prompt box while open.
 
     // Import-config source picker
-    if app.import_config_picker.visible {
-        render_dialog_select(frame, &app.import_config_picker, size);
+    if app.import_config_picker.is_visible() {
+        app.import_config_picker.render(frame, size);
     }
 
     // Connect-a-provider dialog (/connect command)
-    if app.connect_dialog.visible {
-        render_dialog_select(frame, &app.connect_dialog, size);
+    if app.connect_dialog.is_visible() {
+        app.connect_dialog.render(frame, size);
     }
 
     // API key input dialog (opened from /connect for key-based providers)
@@ -806,8 +805,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // Ctrl+K command palette
-    if app.command_palette.visible {
-        render_dialog_select(frame, &app.command_palette, size);
+    if app.command_palette.is_visible() {
+        app.command_palette.render(frame, size);
     }
 
     // MCP elicitation dialog (highest priority modal — rendered last to sit on top)
@@ -816,8 +815,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // Model picker overlay
-    if app.model_picker.visible {
-        render_model_picker(&app.model_picker, size, frame.buffer_mut());
+    if app.model_picker.is_visible() {
+        app.model_picker.render(frame, size);
     }
 
     // Session browser overlay

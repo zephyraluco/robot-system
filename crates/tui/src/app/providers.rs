@@ -177,6 +177,76 @@ impl App {
         self.import_config_picker.open();
     }
 
+    /// Route a confirmed provider-picker selection to its follow-up dialog or
+    /// immediate activation. Called by the key dispatcher when the connect
+    /// dialog returns `DialogOutcome::Confirmed` (Enter on an item).
+    pub(super) fn activate_provider_from_picker(&mut self, selected: SelectItem) {
+        match selected.id.as_str() {
+            // Local providers — activate immediately, no key needed
+            "ollama" | "lmstudio" | "llamacpp" => {
+                self.activate_provider(selected.id.clone(), selected.title.clone(), "Switched to");
+            }
+            // "Free" composite mode — collects any subset of the
+            // free-tier upstreams (min 1; more = better availability).
+            "free" => {
+                let existing: Vec<(&'static str, String)> = claurst_api::FREE_CATALOG
+                    .iter()
+                    .filter_map(|upstream| {
+                        let key = match upstream.id {
+                            "opencode-zen" => self
+                                .auth_store
+                                .api_key_for(claurst_core::ProviderId::OPENCODE_ZEN)
+                                .or_else(|| {
+                                    self.auth_store
+                                        .api_key_for(claurst_core::ProviderId::OPENCODE_GO)
+                                }),
+                            other => self.auth_store.api_key_for(other),
+                        };
+                        key.filter(|k| !k.is_empty()).map(|k| (upstream.id, k))
+                    })
+                    .collect();
+                self.free_mode_dialog.open(&existing);
+            }
+            "anthropic" => {
+                // Anthropic: API key from console.anthropic.com.
+                self.key_input_dialog.open(selected.id.clone(), selected.title.clone());
+            }
+            "anthropic-oauth" => {
+                // Claude Pro/Max subscription: claude.ai OAuth via the browser
+                // (loopback capture), spawned by the main loop. Note: usage
+                // draws from the account's extra-usage pool, not subscription
+                // quota.
+                self.device_auth_dialog.open(selected.id.clone(), selected.title.clone());
+                self.device_auth_pending = Some("anthropic-oauth".to_string());
+            }
+            "custom-openai" => {
+                let current_url = Settings::load_sync().ok().and_then(|settings| {
+                    settings
+                        .providers
+                        .get("custom-openai")
+                        .and_then(|p| p.api_base.clone())
+                });
+                self.custom_provider_dialog
+                    .open(selected.id.clone(), selected.title.clone(), current_url);
+            }
+            "github-copilot" => {
+                // GitHub Copilot: device code flow
+                self.device_auth_dialog.open(selected.id.clone(), selected.title.clone());
+                self.device_auth_pending = Some("github-copilot".to_string());
+            }
+            "codex" | "openai-codex" => {
+                // OpenAI Codex: browser OAuth flow (spawned by main loop)
+                self.device_auth_dialog.open("openai-codex".into(), "OpenAI Codex".into());
+                self.device_auth_pending = Some("openai-codex".to_string());
+            }
+            // AWS Bedrock + all other providers — open API key input dialog
+            _ => {
+                self.key_input_dialog
+                    .open(selected.id.clone(), selected.title.clone());
+            }
+        }
+    }
+
     pub(super) fn import_selection_from_picker(id: &str) -> Option<claurst_core::ImportSelection> {
         match id {
             "claude-md" => Some(claurst_core::ImportSelection::ClaudeMd),

@@ -1,14 +1,22 @@
 //! Model picker overlay (/model command).
 //! Mirrors src/components/ModelPicker.tsx — including effort levels and
 //! fast-mode notice.
+//
+//! Built on the generic dialog base (`DialogCore` + `DialogBehavior` in
+//! `crate::dialog`): the embedded `DialogCore` owns visibility/geometry and
+//! the `DialogBehavior` dispatch pipeline (`handle_key` / `handle_mouse` /
+//! `render`) captures every keyboard + mouse event while the picker is open.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::overlays::{centered_rect, modal_search_line, CLAURST_PANEL_BG};
+use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{modal_search_line, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------
 // Effort level
@@ -507,10 +515,10 @@ fn free_provider_models() -> Vec<ModelEntry> {
 
 /// State for the /model picker overlay.
 pub struct ModelPickerState {
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     pub selected_idx: usize,
     pub models: Vec<ModelEntry>,
-    pub title: String,
     /// Live filter typed by the user.
     pub filter: String,
     /// Current effort level for models that support extended thinking.
@@ -541,10 +549,11 @@ impl ModelPickerState {
     /// models (#228).
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Select model", 65, 20)
+                .header_height(3)
+                .footer_height(1),
             selected_idx: 0,
             models: Vec::new(),
-            title: "Select model".to_string(),
             filter: String::new(),
             effort_level: EffortLevel::Medium,
             fast_mode: false,
@@ -583,18 +592,22 @@ impl ModelPickerState {
             .iter()
             .position(|m| m.is_current)
             .unwrap_or(0);
-        self.title = title.into();
+        self.core.set_title(title);
         self.filter.clear();
         self.effort_level = effort;
         self.fast_mode = fast_mode;
         self.fast_mode_model = fast_mode.then_some(current_model.to_string());
-        self.visible = true;
+        self.core.open();
     }
 
     /// Close the overlay without selecting.
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.filter.clear();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     pub fn is_selected_fast_mode_model(&self, model_id: &str) -> bool {
@@ -782,229 +795,309 @@ impl Default for ModelPickerState {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// DialogBehavior — generic key/mouse capture pipeline
 // ---------------------------------------------------------------------------
 
-/// Render the model picker overlay directly into `buf`.
-///
-/// Draws a centred modal (≈70 wide × ≈22 tall) with:
-/// - Fast-mode notice when fast mode is active
-/// - A filter line when the user is typing
-/// - A scrollable list of models with effort indicator for supporting models
-/// - Selection highlight on the focused row
-/// - Bottom hint bar with ←/→ keys for effort adjustment
-pub fn render_model_picker(state: &ModelPickerState, area: Rect, buf: &mut Buffer) {
-    if !state.visible {
-        return;
+impl DialogBehavior for ModelPickerState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    use ratatui::prelude::Stylize;
-    use ratatui::widgets::Widget;
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    let _pink = Color::Rgb(233, 30, 99);
-    let dim = Color::Rgb(90, 90, 90);
-    let dialog_bg = CLAURST_PANEL_BG;
-    let highlight_bg = Color::Rgb(233, 30, 99);
-    let highlight_fg = Color::White;
+    fn focus_zones(&self) -> usize {
+        1
+    }
 
-    // ── Dark overlay ──
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_bg(Color::Rgb(10, 10, 14));
-                cell.set_fg(Color::Rgb(40, 40, 45));
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: Esc is consumed by the dispatch pipeline (→ Cancelled) before
+        // this hook runs.
+        match key.code {
+            KeyCode::Home => {
+                self.select_first();
+                DialogOutcome::Handled
             }
-        }
-    }
-
-    // ── Dialog size ──
-    let width = 65u16.min(area.width.saturating_sub(6));
-    let max_height = (area.height as f32 * 0.75) as u16;
-    let filtered = state.filtered_models();
-    let content_h = (filtered.len() as u16 + 6).min(max_height).max(8);
-    let dialog_area = centered_rect(width, content_h, area);
-
-    // ── Fill dialog bg (no border) ──
-    for y in dialog_area.y..dialog_area.y + dialog_area.height {
-        for x in dialog_area.x..dialog_area.x + dialog_area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_char(' ');
-                cell.set_bg(dialog_bg);
-                cell.set_fg(Color::White);
+            KeyCode::End => {
+                self.select_last();
+                DialogOutcome::Handled
             }
-        }
-    }
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let footer_height = 1u16.min(inner.height);
-    let header_height = 3u16.min(inner.height.saturating_sub(footer_height));
-    let header_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: header_height,
-    };
-    let body_area = Rect {
-        x: inner.x,
-        y: inner.y.saturating_add(header_height),
-        width: inner.width,
-        height: inner.height.saturating_sub(header_height + footer_height),
-    };
-    let footer_area = Rect {
-        x: inner.x,
-        y: inner.y + inner.height.saturating_sub(footer_height),
-        width: inner.width,
-        height: footer_height,
-    };
-
-    // ── Fixed header ──
-    let mut header_lines: Vec<Line> = Vec::new();
-
-    // Title row: "Select model" left, "esc" right
-    let title_pad = inner.width.saturating_sub(state.title.len() as u16 + 5) as usize;
-    header_lines.push(Line::from(vec![
-        Span::styled(format!(" {}", state.title), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{:>w$}", "esc ", w = title_pad), Style::default().fg(dim)),
-    ]));
-
-    // Search field
-    header_lines.push(Line::from(""));
-    header_lines.push(modal_search_line(&state.filter, "Search", dim, Color::White));
-
-    let header_para = Paragraph::new(header_lines).bg(dialog_bg);
-    header_para.render(header_area, buf);
-
-    if body_area.height == 0 {
-        return;
-    }
-
-    // ── Model items ──
-    let mut lines: Vec<Line> = Vec::new();
-    let mut selected_line_idx: u16 = 0;
-
-    if state.fast_mode {
-        lines.push(Line::from(vec![Span::styled(
-            format!(
-                " \u{26a1} Fast mode ON ({})",
-                state.fast_mode_model.as_deref().unwrap_or("current model")
-            ),
-            Style::default().fg(Color::Yellow),
-        )]));
-    }
-
-    if state.loading_models {
-        lines.push(Line::from(vec![Span::styled(
-            " Loading models\u{2026}",
-            Style::default().fg(dim),
-        )]));
-    }
-
-    if !lines.is_empty() {
-        lines.push(Line::from(""));
-    }
-
-    if filtered.is_empty() {
-        lines.push(Line::from(vec![Span::styled(" No results found", Style::default().fg(dim))]));
-        if !state.filter.trim().is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                " Press Enter to use custom model",
-                Style::default().fg(Color::Rgb(200, 200, 200)),
-            )]));
-        }
-    } else {
-        for (i, model) in filtered.iter().enumerate() {
-            let is_selected = i == state.selected_idx;
-            let supports_effort = model_supports_effort(&model.id);
-
-            if is_selected {
-                selected_line_idx = lines.len() as u16;
+            KeyCode::Up => {
+                self.select_prev();
+                DialogOutcome::Handled
             }
-
-            let (fg, bg) = if is_selected {
-                (highlight_fg, highlight_bg)
-            } else {
-                (Color::White, dialog_bg)
-            };
-
-            let mut spans: Vec<Span<'static>> = Vec::new();
-
-            // Current model indicator
-            if model.is_current {
-                spans.push(Span::styled(" \u{25cf} ", Style::default().fg(Color::Green).bg(bg)));
-            } else {
-                spans.push(Span::styled("   ", Style::default().bg(bg)));
+            KeyCode::Down => {
+                self.select_next();
+                DialogOutcome::Handled
             }
-
-            spans.push(Span::styled(model.display_name.clone(), Style::default().fg(fg).bg(bg)));
-
-            // Effort indicator — show the effort clamped onto this model's
-            // variants ladder so it never displays a tier the model can't do.
-            if supports_effort && is_selected {
-                let shown = state.effective_effort().unwrap_or(state.effort_level);
-                spans.push(Span::styled(
-                    format!("  {} {}", shown.symbol(), shown.label()),
-                    Style::default().fg(Color::Rgb(200, 255, 200)).bg(bg),
-                ));
+            KeyCode::Left => {
+                self.effort_prev();
+                DialogOutcome::Handled
             }
-
-            // Description
-            if !model.description.is_empty() {
-                let desc_fg = if is_selected { Color::Rgb(200, 200, 200) } else { dim };
-                spans.push(Span::styled(
-                    format!("  {}", model.description),
-                    Style::default().fg(desc_fg).bg(bg),
-                ));
+            KeyCode::Right => {
+                self.effort_next();
+                DialogOutcome::Handled
             }
-
-            // Pad for full-width highlight
-            if is_selected {
-                let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
-                let pad = inner.width.saturating_sub(text_len as u16) as usize;
-                if pad > 0 {
-                    spans.push(Span::styled(" ".repeat(pad), Style::default().bg(highlight_bg)));
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => {
+                // Confirm only when a model is selected or a custom model id is
+                // typed; otherwise stay open.
+                if self.confirm().is_some() {
+                    DialogOutcome::Confirmed
+                } else {
+                    DialogOutcome::Ignored
                 }
             }
-
-            lines.push(Line::from(spans));
+            KeyCode::Backspace => {
+                self.pop_filter_char();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                // Plain typing only: modified chars (Ctrl+V, Ctrl+C, …) are
+                // shortcuts, not filter input. Modal capture still swallows
+                // them so they never reach the UI underneath.
+                self.push_filter_char(c);
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
         }
     }
 
-    // ── Scroll ──
-    let total_lines = lines.len() as u16;
-    let visible = body_area.height;
-    let scroll_y = if total_lines <= visible {
-        0u16
-    } else if selected_line_idx + 3 >= visible {
-        (selected_line_idx + 3).saturating_sub(visible)
-    } else {
-        0
-    };
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Click-to-select: rows are laid out 1:1 under the body area in
+                // render_content, so the row offset (accounting for scroll)
+                // maps directly to a filtered-model index. Clicks elsewhere
+                // inside the dialog are absorbed.
+                let layout = self.core.layout();
+                let body = layout.body_area;
+                if body.height > 0
+                    && mouse.row >= body.y
+                    && mouse.row < body.y.saturating_add(body.height)
+                {
+                    let filtered = self.filtered_models().len();
+                    let row_idx = (mouse.row - body.y) as usize;
+                    // Skip the fast-mode / loading notice rows by resolving the
+                    // rendered model rows lazily: rows are 1:1 with the item
+                    // list in the common case, so clamp to the list length.
+                    if filtered > 0 {
+                        let idx = row_idx.min(filtered - 1);
+                        self.selected_idx = idx;
+                    }
+                }
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
 
-    let para = Paragraph::new(lines).bg(dialog_bg).scroll((scroll_y, 0));
+    fn render_content(&self, frame: &mut ratatui::Frame, layout: &crate::overlays::ModalLayout) {
+        use ratatui::prelude::Stylize;
 
-    para.render(body_area, buf);
+        let dim = Color::Rgb(90, 90, 90);
+        let dialog_bg = CLAURST_PANEL_BG;
+        let highlight_bg = Color::Rgb(233, 30, 99);
+        let highlight_fg = Color::White;
 
-    let mut footer_spans = vec![
-        Span::styled(" enter", Style::default().fg(dim)),
-        Span::styled(" select", Style::default().fg(dim)),
-    ];
-    if let Some(model) = filtered.get(state.selected_idx) {
-        if model_supports_effort(&model.id) {
+        let header_area = layout.header_area;
+        let body_area = layout.body_area;
+        let footer_area = layout.footer_area;
+
+        // ── Header extras (the shared `render` already drew the title on row 0) ──
+        // "esc" hint, right-aligned on the title row.
+        if header_area.height > 0 && header_area.width > 4 {
+            let esc_area = Rect {
+                height: 1,
+                ..header_area
+            };
+            frame.render_widget(
+                Paragraph::new("esc ")
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(dim)),
+                esc_area,
+            );
+        }
+        // Search field on the third header row (row 1 stays blank).
+        if header_area.height >= 3 {
+            let search_area = Rect {
+                y: header_area.y + 2,
+                height: 1,
+                ..header_area
+            };
+            frame.render_widget(
+                Paragraph::new(modal_search_line(&self.filter, "Search", dim, Color::White))
+                    .bg(dialog_bg),
+                search_area,
+            );
+        }
+
+        if body_area.height == 0 {
+            return;
+        }
+
+        // ── Model items ──
+        let filtered = self.filtered_models();
+        let mut lines: Vec<Line> = Vec::new();
+        let mut selected_line_idx: u16 = 0;
+
+        if self.fast_mode {
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    " \u{26a1} Fast mode ON ({})",
+                    self.fast_mode_model.as_deref().unwrap_or("current model")
+                ),
+                Style::default().fg(Color::Yellow),
+            )]));
+        }
+
+        if self.loading_models {
+            lines.push(Line::from(vec![Span::styled(
+                " Loading models\u{2026}",
+                Style::default().fg(dim),
+            )]));
+        }
+
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+
+        if filtered.is_empty() {
+            lines.push(Line::from(vec![Span::styled(
+                " No results found",
+                Style::default().fg(dim),
+            )]));
+            if !self.filter.trim().is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    " Press Enter to use custom model",
+                    Style::default().fg(Color::Rgb(200, 200, 200)),
+                )]));
+            }
+        } else {
+            for (i, model) in filtered.iter().enumerate() {
+                let is_selected = i == self.selected_idx;
+                let supports_effort = model_supports_effort(&model.id);
+
+                if is_selected {
+                    selected_line_idx = lines.len() as u16;
+                }
+
+                let (fg, bg) = if is_selected {
+                    (highlight_fg, highlight_bg)
+                } else {
+                    (Color::White, dialog_bg)
+                };
+
+                let mut spans: Vec<Span<'static>> = Vec::new();
+
+                // Current model indicator
+                if model.is_current {
+                    spans.push(Span::styled(
+                        " \u{25cf} ",
+                        Style::default().fg(Color::Green).bg(bg),
+                    ));
+                } else {
+                    spans.push(Span::styled("   ", Style::default().bg(bg)));
+                }
+
+                spans.push(Span::styled(
+                    model.display_name.clone(),
+                    Style::default().fg(fg).bg(bg),
+                ));
+
+                // Effort indicator — show the effort clamped onto this model's
+                // variants ladder so it never displays a tier the model can't do.
+                if supports_effort && is_selected {
+                    let shown = self.effective_effort().unwrap_or(self.effort_level);
+                    spans.push(Span::styled(
+                        format!("  {} {}", shown.symbol(), shown.label()),
+                        Style::default().fg(Color::Rgb(200, 255, 200)).bg(bg),
+                    ));
+                }
+
+                // Description
+                if !model.description.is_empty() {
+                    let desc_fg = if is_selected { Color::Rgb(200, 200, 200) } else { dim };
+                    spans.push(Span::styled(
+                        format!("  {}", model.description),
+                        Style::default().fg(desc_fg).bg(bg),
+                    ));
+                }
+
+                // Pad for full-width highlight
+                if is_selected {
+                    let text_len: usize = spans.iter().map(|s| s.content.len()).sum();
+                    let pad = body_area.width.saturating_sub(text_len as u16) as usize;
+                    if pad > 0 {
+                        spans.push(Span::styled(
+                            " ".repeat(pad),
+                            Style::default().bg(highlight_bg),
+                        ));
+                    }
+                }
+
+                lines.push(Line::from(spans));
+            }
+        }
+
+        // ── Scroll ──
+        let total_lines = lines.len() as u16;
+        let visible = body_area.height;
+        let scroll_y = if total_lines <= visible {
+            0u16
+        } else if selected_line_idx + 3 >= visible {
+            (selected_line_idx + 3).saturating_sub(visible)
+        } else {
+            0
+        };
+
+        let para = Paragraph::new(lines).bg(dialog_bg).scroll((scroll_y, 0));
+        frame.render_widget(para, body_area);
+
+        // ── Footer hint bar ──
+        if footer_area.height > 0 {
+            let mut footer_spans = vec![
+                Span::styled(" enter", Style::default().fg(dim)),
+                Span::styled(" select", Style::default().fg(dim)),
+            ];
+            if let Some(model) = filtered.get(self.selected_idx) {
+                if model_supports_effort(&model.id) {
+                    footer_spans.push(Span::raw("  "));
+                    footer_spans.push(Span::styled(
+                        "\u{2190}/\u{2192}",
+                        Style::default().fg(dim),
+                    ));
+                    footer_spans.push(Span::styled(" effort", Style::default().fg(dim)));
+                }
+            }
             footer_spans.push(Span::raw("  "));
-            footer_spans.push(Span::styled("\u{2190}/\u{2192}", Style::default().fg(dim)));
-            footer_spans.push(Span::styled(" effort", Style::default().fg(dim)));
+            footer_spans.push(Span::styled(
+                " /connect",
+                Style::default().fg(Color::Rgb(233, 30, 99)),
+            ));
+            footer_spans.push(Span::styled(" providers", Style::default().fg(dim)));
+            frame.render_widget(
+                Paragraph::new(Line::from(footer_spans)).bg(dialog_bg),
+                footer_area,
+            );
         }
     }
-    footer_spans.push(Span::raw("  "));
-    footer_spans.push(Span::styled(" /connect", Style::default().fg(Color::Rgb(233, 30, 99))));
-    footer_spans.push(Span::styled(" providers", Style::default().fg(dim)));
-    Paragraph::new(Line::from(footer_spans)).bg(dialog_bg).render(footer_area, buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,7 +1205,7 @@ mod tests {
     fn open_with_title_updates_dialog_title() {
         let mut p = ModelPickerState::new();
         p.open_with_title("Anthropic", "claude-sonnet-4-6", EffortLevel::Medium, false);
-        assert_eq!(p.title, "Anthropic");
+        assert_eq!(p.core.title(), "Anthropic");
     }
 
     #[test]
@@ -1186,7 +1279,7 @@ mod tests {
         let first_id = p.filtered_models()[0].id.clone();
         let result = p.confirm();
         assert_eq!(result.map(|(id, _)| id), Some(first_id));
-        assert!(!p.visible, "picker should be closed after confirm");
+        assert!(!p.is_visible(), "picker should be closed after confirm");
     }
 
     // 9. confirm() on empty filter list uses custom model when filter is set.
@@ -1205,7 +1298,7 @@ mod tests {
         let mut p = make_picker_with_current("claude-opus-4-6");
         p.push_filter_char('x');
         p.close();
-        assert!(!p.visible);
+        assert!(!p.is_visible());
         assert!(p.filter.is_empty());
     }
 
@@ -1280,26 +1373,27 @@ mod tests {
         );
     }
 
-    // 14. render_model_picker does not panic for a default-area call.
+    // 14. trait render does not panic.
     #[test]
     fn render_does_not_panic() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
         let mut p = make_picker();
         p.open("claude-sonnet-4-6");
-        let area = Rect::new(0, 0, 120, 40);
-        let mut buf = Buffer::empty(area);
-        render_model_picker(&p, area, &mut buf);
+        terminal
+            .draw(|frame| p.render(frame, frame.area()))
+            .unwrap();
     }
 
     // 15. render does nothing when not visible.
     #[test]
     fn render_noop_when_hidden() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         let p = ModelPickerState::new();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        render_model_picker(&p, area, &mut buf);
-        for cell in buf.content() {
-            assert_eq!(cell.symbol(), " ", "buffer should be empty when picker is hidden");
-        }
+        let before = terminal.backend().buffer().clone();
+        terminal
+            .draw(|frame| p.render(frame, frame.area()))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer().content(), before.content());
     }
 
     // 16. models_for_provider_from_registry returns the bundled snapshot's

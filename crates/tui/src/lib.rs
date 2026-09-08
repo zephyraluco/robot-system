@@ -147,6 +147,9 @@ pub mod onboarding_dialog;
 pub mod effort_picker;
 /// Reusable fuzzy-search selection dialog widget.
 pub mod dialog_select;
+/// Generic dialog base component (`DialogCore` + `DialogBehavior`) shared by
+/// all dialogs: modal frame chrome, event capture (keyboard + mouse), focus.
+pub mod dialog;
 /// Masked text input overlay for entering API keys.
 pub mod key_input_dialog;
 /// Modal dialog for entering custom provider URL + API key.
@@ -187,14 +190,14 @@ pub use agents_view::{AgentInfo, AgentStatus, AgentsMenuState, AgentDefinition, 
 pub use stats_dialog::{StatsDialogState, StatsTab, load_stats, render_stats_dialog};
 pub use mcp_view::{McpViewState, McpServerView, McpToolView, McpViewStatus, render_mcp_view};
 pub use prompt_input::{PromptInputState, VimMode, VimPendingState, VimOperator, VimFindKind, InputMode, render_prompt_input, handle_paste, compute_typeahead};
-pub use model_picker::{ModelPickerState, ModelEntry, EffortLevel, render_model_picker, model_supports_effort};
+pub use model_picker::{ModelPickerState, ModelEntry, EffortLevel, model_supports_effort};
 pub use session_browser::{SessionBrowserState, SessionBrowserMode, SessionEntry, render_session_browser};
 pub use import_config_dialog::{ImportConfigDialogState, render_import_config_dialog};
 pub use session_branching::{SessionBranchingState, BranchBrowserMode, BranchInfo, render_session_branching};
 pub use invalid_config_dialog::{InvalidConfigDialogState, InvalidConfigKind, render_invalid_config_dialog};
 pub use bypass_permissions_dialog::{BypassPermissionsDialogState, render_bypass_permissions_dialog};
 pub use onboarding_dialog::{OnboardingDialogState, render_onboarding_dialog};
-pub use dialog_select::{DialogSelectState, SelectItem, render_dialog_select};
+pub use dialog_select::{DialogSelectState, SelectItem};
 pub use key_input_dialog::{KeyInputDialogState, render_key_input_dialog};
 pub use custom_provider_dialog::{CustomProviderDialogState, CustomProviderField, render_custom_provider_dialog};
 pub use free_mode_dialog::{FreeModeDialogState, FreeModeField, render_free_mode_dialog};

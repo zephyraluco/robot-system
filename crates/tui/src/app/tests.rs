@@ -503,9 +503,9 @@ use super::types::{ContextMenuItem, ContextMenuState};
     #[test]
     fn test_model_slash_command_opens_picker() {
         let mut app = make_app();
-        assert!(!app.model_picker.visible);
+        assert!(!app.model_picker.is_visible());
         assert!(app.intercept_slash_command("model"));
-        assert!(app.model_picker.visible);
+        assert!(app.model_picker.is_visible());
     }
 
     #[test]
@@ -651,7 +651,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         ));
 
-        assert!(app.model_picker.visible);
+        assert!(app.model_picker.is_visible());
     }
 
     #[test]
@@ -663,7 +663,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
 
         app.handle_key_event(press_key(KeyCode::Char('k'), KeyModifiers::CONTROL));
 
-        assert!(app.command_palette.visible);
+        assert!(app.command_palette.is_visible());
         assert_eq!(app.prompt_input.text, "hello");
     }
 

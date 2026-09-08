@@ -1,8 +1,8 @@
 //! Keyboard input: normalization and key-event dispatch.
 
-use claurst_core::config::Settings;
 use claurst_core::keybindings::{KeyContext, KeybindingResult, ParsedKeystroke};
 use crate::agents_view::AgentsRoute;
+use crate::dialog::DialogBehavior as _;
 use crate::diff_viewer::DiffPane;
 use crate::export_dialog::ExportFormat;
 use crate::notifications::NotificationKind;
@@ -208,6 +208,46 @@ impl App {
         // literal `KeyCode::Char(..)` arms below — including Ctrl+C / Ctrl+D,
         // which are matched here rather than via the keybinding table (issue #47).
         let key = normalize_layout_shortcut_key(key);
+
+        // ---- DialogBehavior dialogs capture EVERY key -----------------------
+        // While one of these dialogs is visible it owns ALL keyboard input,
+        // unconditionally: no global shortcuts, no keybinding resolver, no
+        // paste handling, no Esc-dismiss-anything runs first. Every raw key
+        // is routed to the focused dialog; whatever the dialog ignores is
+        // swallowed by its modal capture (Ctrl+V included — list pickers
+        // don't accept pastes, so nothing can leak into the prompt).
+        if self.connect_dialog.is_visible()
+            || self.import_config_picker.is_visible()
+            || self.command_palette.is_visible()
+        {
+            if self.connect_dialog.is_visible() {
+                let out = self.connect_dialog.handle_key(key);
+                if out.is_confirmed() {
+                    if let Some(selected) = self.connect_dialog.take_selected() {
+                        self.activate_provider_from_picker(selected);
+                    }
+                }
+            } else if self.import_config_picker.is_visible() {
+                let out = self.import_config_picker.handle_key(key);
+                if out.is_confirmed() {
+                    if let Some(selected) = self.import_config_picker.take_selected() {
+                        if let Some(selection) = Self::import_selection_from_picker(&selected.id) {
+                            self.open_import_config_preview(selection);
+                        }
+                    }
+                }
+            } else {
+                let out = self.command_palette.handle_key(key);
+                if out.is_confirmed() {
+                    if let Some(selected) = self.command_palette.take_selected() {
+                        // Put the command in the input and signal for execution
+                        self.prompt_input.replace_text(selected.id.clone());
+                        return true; // signal to submit this as input
+                    }
+                }
+            }
+            return false;
+        }
 
         // Dismiss error modal with Esc
         if key.code == KeyCode::Esc && self.notifications.current_is_error() {
@@ -598,158 +638,11 @@ impl App {
             return false;
         }
 
-        // Connect-a-provider dialog (/connect command)
-        if self.connect_dialog.visible {
-            match key.code {
-                KeyCode::Esc => { self.connect_dialog.close(); }
-                KeyCode::Home => { self.connect_dialog.move_home(); }
-                KeyCode::End => { self.connect_dialog.move_end(); }
-                KeyCode::Up => { self.connect_dialog.move_up(); }
-                KeyCode::Down => { self.connect_dialog.move_down(); }
-                KeyCode::PageUp => { self.connect_dialog.page_up(); }
-                KeyCode::PageDown => { self.connect_dialog.page_down(); }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.connect_dialog.move_up(); }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.connect_dialog.move_down(); }
-                KeyCode::Enter => {
-                    if let Some(selected) = self.connect_dialog.selected().cloned() {
-                        self.connect_dialog.close();
-
-                        match selected.id.as_str() {
-                            // Local providers — activate immediately, no key needed
-                            "ollama" | "lmstudio" | "llamacpp" => {
-                                self.activate_provider(selected.id.clone(), selected.title.clone(), "Switched to");
-                            }
-                            // "Free" composite mode — collects any subset of the
-                            // free-tier upstreams (min 1; more = better availability).
-                            "free" => {
-                                let existing: Vec<(&'static str, String)> = claurst_api::FREE_CATALOG
-                                    .iter()
-                                    .filter_map(|upstream| {
-                                        let key = match upstream.id {
-                                            "opencode-zen" => self
-                                                .auth_store
-                                                .api_key_for(claurst_core::ProviderId::OPENCODE_ZEN)
-                                                .or_else(|| {
-                                                    self.auth_store.api_key_for(
-                                                        claurst_core::ProviderId::OPENCODE_GO,
-                                                    )
-                                                }),
-                                            other => self.auth_store.api_key_for(other),
-                                        };
-                                        key.filter(|k| !k.is_empty())
-                                            .map(|k| (upstream.id, k))
-                                    })
-                                    .collect();
-                                self.free_mode_dialog.open(&existing);
-                            }
-                            "anthropic" => {
-                                // Anthropic: API key from console.anthropic.com.
-                                self.key_input_dialog.open(selected.id.clone(), selected.title.clone());
-                            }
-                            "anthropic-oauth" => {
-                                // Claude Pro/Max subscription: claude.ai OAuth via
-                                // the browser (loopback capture), spawned by the
-                                // main loop. Note: usage draws from the account's
-                                // extra-usage pool, not subscription quota.
-                                self.device_auth_dialog.open(selected.id.clone(), selected.title.clone());
-                                self.device_auth_pending = Some("anthropic-oauth".to_string());
-                            }
-                            "custom-openai" => {
-                                let current_url = Settings::load_sync()
-                                    .ok()
-                                    .and_then(|settings| settings.providers.get("custom-openai").and_then(|p| p.api_base.clone()));
-                                self.custom_provider_dialog
-                                    .open(selected.id.clone(), selected.title.clone(), current_url);
-                            }
-                            "github-copilot" => {
-                                // GitHub Copilot: device code flow
-                                self.device_auth_dialog.open(selected.id.clone(), selected.title.clone());
-                                self.device_auth_pending = Some("github-copilot".to_string());
-                            }
-                            "codex" | "openai-codex" => {
-                                // OpenAI Codex: browser OAuth flow (spawned by main loop)
-                                self.device_auth_dialog.open("openai-codex".into(), "OpenAI Codex".into());
-                                self.device_auth_pending = Some("openai-codex".to_string());
-                            }
-                            // AWS Bedrock — accept a bearer token via key input dialog
-                            "amazon-bedrock" => {
-                                self.key_input_dialog
-                                    .open(selected.id.clone(), selected.title.clone());
-                            }
-                            // All other providers — open API key input dialog
-                            _ => {
-                                self.key_input_dialog
-                                    .open(selected.id.clone(), selected.title.clone());
-                            }
-                        }
-                    }
-                }
-                KeyCode::Backspace => { self.connect_dialog.filter_pop(); }
-                KeyCode::Char(c) => { self.connect_dialog.filter_push(c); }
-                _ => {}
-            }
-            return false;
-        }
-
-        // Import-config source picker
-        if self.import_config_picker.visible {
-            match key.code {
-                KeyCode::Esc => { self.import_config_picker.close(); }
-                KeyCode::Home => { self.import_config_picker.move_home(); }
-                KeyCode::End => { self.import_config_picker.move_end(); }
-                KeyCode::Up => { self.import_config_picker.move_up(); }
-                KeyCode::Down => { self.import_config_picker.move_down(); }
-                KeyCode::PageUp => { self.import_config_picker.page_up(); }
-                KeyCode::PageDown => { self.import_config_picker.page_down(); }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.import_config_picker.move_up(); }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.import_config_picker.move_down(); }
-                KeyCode::Enter => {
-                    if let Some(selected) = self.import_config_picker.selected().cloned() {
-                        self.import_config_picker.close();
-                        if let Some(selection) = Self::import_selection_from_picker(&selected.id) {
-                            self.open_import_config_preview(selection);
-                        }
-                    }
-                }
-                KeyCode::Backspace => { self.import_config_picker.filter_pop(); }
-                KeyCode::Char(c) => { self.import_config_picker.filter_push(c); }
-                _ => {}
-            }
-            return false;
-        }
-
         // Import-config preview dialog
         if self.import_config_dialog.visible {
             match key.code {
                 KeyCode::Esc => self.import_config_dialog.close(),
                 KeyCode::Enter => self.perform_import_config(),
-                _ => {}
-            }
-            return false;
-        }
-
-        // Command palette (Ctrl+K)
-        if self.command_palette.visible {
-            match key.code {
-                KeyCode::Esc => { self.command_palette.close(); }
-                KeyCode::Home => { self.command_palette.move_home(); }
-                KeyCode::End => { self.command_palette.move_end(); }
-                KeyCode::Up => { self.command_palette.move_up(); }
-                KeyCode::Down => { self.command_palette.move_down(); }
-                KeyCode::PageUp => { self.command_palette.page_up(); }
-                KeyCode::PageDown => { self.command_palette.page_down(); }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.command_palette.move_up(); }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => { self.command_palette.move_down(); }
-                KeyCode::Enter => {
-                    if let Some(selected) = self.command_palette.selected().cloned() {
-                        self.command_palette.close();
-                        // Put the command in the input and signal for execution
-                        self.prompt_input.replace_text(selected.id.clone());
-                        return true; // signal to submit this as input
-                    }
-                }
-                KeyCode::Backspace => { self.command_palette.filter_pop(); }
-                KeyCode::Char(c) => { self.command_palette.filter_push(c); }
                 _ => {}
             }
             return false;
@@ -766,49 +659,39 @@ impl App {
             return false;
         }
 
-        // Model picker intercepts navigation and Esc
-        if self.model_picker.visible {
-            match key.code {
-                KeyCode::Esc => self.model_picker.close(),
-                KeyCode::Home => self.model_picker.select_first(),
-                KeyCode::End => self.model_picker.select_last(),
-                KeyCode::Up => self.model_picker.select_prev(),
-                KeyCode::Down => self.model_picker.select_next(),
-                KeyCode::Left => self.model_picker.effort_prev(),
-                KeyCode::Right => self.model_picker.effort_next(),
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => self.model_picker.select_prev(),
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => self.model_picker.select_next(),
-                KeyCode::Enter => {
-                    if let Some((model_id, effort)) = self.model_picker.confirm() {
-                        // If user picked a model other than the fast-mode model
-                        // while fast mode was active, turn fast mode off.
-                        if self.fast_mode && !self.model_picker.is_selected_fast_mode_model(&model_id) {
-                            self.fast_mode = false;
-                        }
-                        if let Some(e) = effort {
-                            self.effort_level = e;
-                        }
-                        // Store explicit selections in the canonical
-                        // "provider/model" form for non-Anthropic providers.
-                        // The "free" composite's picker entries already carry
-                        // a routing prefix (`free/…`, `zen/…`, `openrouter/…`)
-                        // so re-prefixing would produce nonsense like
-                        // `free/free/auto`.
-                        let provider = self.config.provider.as_deref().unwrap_or("anthropic");
-                        let full_model = if provider == "anthropic" || provider == "free" {
-                            model_id.clone()
-                        } else {
-                            format!("{}/{}", provider, model_id)
-                        };
-                        self.set_model(full_model.clone());
-                        self.persist_provider_and_model();
-                        let effort_hint = effort.map(|e| format!(" [{}]", e.label())).unwrap_or_default();
-                        self.status_message = Some(format!("Model: {}{}", full_model, effort_hint));
+        // Model picker — routed through the generic DialogBehavior pipeline
+        // (crate::dialog): navigation, effort ←/→, filter typing and Esc are
+        // handled by the dialog itself; Enter returns Confirmed and the
+        // confirmed model is consumed here.
+        if self.model_picker.is_visible() {
+            let out = self.model_picker.handle_key(key);
+            if out.is_confirmed() {
+                if let Some((model_id, effort)) = self.model_picker.confirm() {
+                    // If user picked a model other than the fast-mode model
+                    // while fast mode was active, turn fast mode off.
+                    if self.fast_mode && !self.model_picker.is_selected_fast_mode_model(&model_id) {
+                        self.fast_mode = false;
                     }
+                    if let Some(e) = effort {
+                        self.effort_level = e;
+                    }
+                    // Store explicit selections in the canonical
+                    // "provider/model" form for non-Anthropic providers.
+                    // The "free" composite's picker entries already carry
+                    // a routing prefix (`free/…`, `zen/…`, `openrouter/…`)
+                    // so re-prefixing would produce nonsense like
+                    // `free/free/auto`.
+                    let provider = self.config.provider.as_deref().unwrap_or("anthropic");
+                    let full_model = if provider == "anthropic" || provider == "free" {
+                        model_id.clone()
+                    } else {
+                        format!("{}/{}", provider, model_id)
+                    };
+                    self.set_model(full_model.clone());
+                    self.persist_provider_and_model();
+                    let effort_hint = effort.map(|e| format!(" [{}]", e.label())).unwrap_or_default();
+                    self.status_message = Some(format!("Model: {}{}", full_model, effort_hint));
                 }
-                KeyCode::Backspace => self.model_picker.pop_filter_char(),
-                KeyCode::Char(c) => self.model_picker.push_filter_char(c),
-                _ => {}
             }
             return false;
         }
@@ -2547,8 +2430,8 @@ impl App {
     /// Route a paste into a visible text-input dialog (Connect Custom URL/API
     /// key, API-key dialog, free-mode keys, ask-user custom answer, MCP
     /// elicitation fields).  Returns `true` when a dialog consumed the paste;
-    /// `false` when no text dialog is open and the paste should go to the
-    /// main prompt input instead.
+    /// `false` when no text dialog is open — callers MUST then swallow the
+    /// paste if any modal is visible (it must never reach the main prompt).
     pub fn handle_dialog_paste(&mut self, data: &str) -> bool {
         if self.custom_provider_dialog.visible {
             for ch in data.chars() {
@@ -2584,7 +2467,10 @@ impl App {
     }
 
     /// Returns `true` when the app is in a state where the prompt can accept
-    /// regular text input — used to gate paste-burst detection.
+    /// regular text input. NOTE: this list predates the DialogSelect pickers
+    /// (connect dialog, command palette, …) and is NOT modal-complete —
+    /// use `paste_burst_allowed` for paste gating instead.
+    #[allow(dead_code)]
     pub(super) fn prompt_is_accepting_text(&self) -> bool {
         !self.is_streaming
             && self.permission_request.is_none()

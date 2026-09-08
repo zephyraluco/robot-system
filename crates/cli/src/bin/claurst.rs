@@ -3153,21 +3153,27 @@ async fn run_interactive(
                     // is_streaming: the prompt stays editable during a turn so a
                     // follow-up can be composed/queued — dropping the event here
                     // silently loses the pasted content.
-                    if app.permission_request.is_none()
-                        && !app.history_search_overlay.visible
-                        && app.history_search.is_none()
-                    {
-                        // A visible text-input dialog captures the paste instead of the main prompt input.
+                    //
+                    // Modal dialogs capture ALL input unconditionally: while any
+                    // modal is open the paste is either captured by a visible
+                    // text-entry dialog (API key, custom provider, …) or
+                    // swallowed outright (list pickers like /connect have no
+                    // text field). It can NEVER reach the background prompt.
+                    if app.any_modal_open() {
                         if app.handle_dialog_paste(&data) {
                             // 刷新输入框状态
                             app.refresh_prompt_input();
-                        } else {
-                            // Paste into the main prompt through the shared path
-                            // so file-path/image pastes and the large-paste
-                            // placeholder are handled uniformly.
-                            app.handle_paste_data(data);
-                            app.refresh_prompt_input();
                         }
+                        // else: swallowed by the modal — do nothing.
+                    } else if app.permission_request.is_none()
+                        && !app.history_search_overlay.visible
+                        && app.history_search.is_none()
+                    {
+                        // Paste into the main prompt through the shared path
+                        // so file-path/image pastes and the large-paste
+                        // placeholder are handled uniformly.
+                        app.handle_paste_data(data);
+                        app.refresh_prompt_input();
                     }
                 }
                 Event::Mouse(mouse) => {

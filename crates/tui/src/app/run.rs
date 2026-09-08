@@ -441,11 +441,17 @@ impl App {
                         // zero-timeout immediately after the first character arrives — a paste
                         // dumps every character at once while normal typing rarely queues more
                         // than one char in the same 50 ms window.
-                        if key.modifiers == KeyModifiers::NONE
-                            || key.modifiers == KeyModifiers::SHIFT
+                        //
+                        // Runs ONLY when no modal dialog is open: a visible dialog captures
+                        // every key unconditionally (see the capture-first block at the top
+                        // of handle_key_event), so a raw-char paste flood must never bypass
+                        // it into the background prompt.
+                        if !self.any_modal_open()
+                            && (key.modifiers == KeyModifiers::NONE
+                                || key.modifiers == KeyModifiers::SHIFT)
                         {
                             if let KeyCode::Char(c) = key.code {
-                                if self.prompt_is_accepting_text() {
+                                if self.paste_burst_allowed() {
                                     if let Some(burst) = self.try_detect_paste_burst(c) {
                                         self.handle_paste_data(burst);
                                         self.refresh_prompt_input();
@@ -490,8 +496,18 @@ impl App {
                             && !self.history_search_overlay.visible
                             && self.history_search.is_none() =>
                     {
-                        self.handle_paste_data(data);
-                        self.refresh_prompt_input();
+                        if self.any_modal_open() {
+                            // A modal dialog owns all input: a visible text-entry
+                            // dialog captures the paste, every other modal
+                            // swallows it. It can never reach the background
+                            // prompt.
+                            if self.handle_dialog_paste(&data) {
+                                self.refresh_prompt_input();
+                            }
+                        } else {
+                            self.handle_paste_data(data);
+                            self.refresh_prompt_input();
+                        }
                     }
                     Event::Mouse(mouse_event) => {
                         self.handle_mouse_event(mouse_event);

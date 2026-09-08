@@ -1,5 +1,6 @@
 //! Pointer input: mouse events, selection, context menu, paste viewer.
 
+use crate::dialog::DialogBehavior as _;
 use crate::notifications::NotificationKind;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use tracing::debug;
@@ -376,14 +377,32 @@ impl App {
             return;
         }
 
+        // ---- Connect-a-provider dialog ----------------------------------
+        // Routes through the generic DialogBehavior pipeline (crate::dialog):
+        // clicks/scrolls inside are handled by the dialog itself; a left click
+        // outside dismisses all secondary views and restores input focus,
+        // matching the pre-migration behavior.
+        if self.connect_dialog.is_visible() {
+            if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left))
+                && !self
+                    .connect_dialog
+                    .contains(mouse_event.column, mouse_event.row)
+            {
+                self.close_secondary_views();
+                self.focus = FocusTarget::Input;
+                return;
+            }
+            let _ = self.connect_dialog.handle_mouse(mouse_event);
+            return; // modal: swallow every mouse event while open
+        }
+
         // ---- Dialog interaction: dismiss on click-outside, scroll/click inside ----
         // Key-input and device-auth stay outside this gate so their visible text
         // can still be selected and copied with the mouse.
-        let any_dialog = self.connect_dialog.visible
-            || self.import_config_picker.visible
+        let any_dialog = self.import_config_picker.is_visible()
             || self.import_config_dialog.visible
-            || self.command_palette.visible
-            || self.model_picker.visible
+            || self.command_palette.is_visible()
+            || self.model_picker.is_visible()
             || self.export_dialog.visible
             || self.settings_screen.visible
             || self.stats_dialog.visible
@@ -394,11 +413,9 @@ impl App {
             match mouse_event.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     // DialogSelect dialogs — check if click is inside for item selection
-                    let in_dialog = if self.connect_dialog.visible {
-                        self.connect_dialog.contains(mouse_event.column, mouse_event.row)
-                    } else if self.import_config_picker.visible {
+                    let in_dialog = if self.import_config_picker.is_visible() {
                         self.import_config_picker.contains(mouse_event.column, mouse_event.row)
-                    } else if self.command_palette.visible {
+                    } else if self.command_palette.is_visible() {
                         self.command_palette.contains(mouse_event.column, mouse_event.row)
                     } else {
                         // Other dialogs (model_picker, settings, export, etc.) —
@@ -409,11 +426,9 @@ impl App {
 
                     if in_dialog {
                         // Click inside a DialogSelect — select the clicked item
-                        if self.connect_dialog.visible {
-                            self.connect_dialog.handle_mouse_click(mouse_event.row);
-                        } else if self.import_config_picker.visible {
+                        if self.import_config_picker.is_visible() {
                             self.import_config_picker.handle_mouse_click(mouse_event.row);
-                        } else if self.command_palette.visible {
+                        } else if self.command_palette.is_visible() {
                             self.command_palette.handle_mouse_click(mouse_event.row);
                         }
                         // Other dialogs: click absorbed, no action needed
@@ -425,14 +440,12 @@ impl App {
                 }
                 MouseEventKind::ScrollUp => {
                     // Scroll through dialog items
-                    if self.connect_dialog.visible { self.connect_dialog.move_up(); }
-                    else if self.import_config_picker.visible { self.import_config_picker.move_up(); }
-                    else if self.command_palette.visible { self.command_palette.move_up(); }
+                    if self.import_config_picker.is_visible() { self.import_config_picker.move_up(); }
+                    else if self.command_palette.is_visible() { self.command_palette.move_up(); }
                 }
                 MouseEventKind::ScrollDown => {
-                    if self.connect_dialog.visible { self.connect_dialog.move_down(); }
-                    else if self.import_config_picker.visible { self.import_config_picker.move_down(); }
-                    else if self.command_palette.visible { self.command_palette.move_down(); }
+                    if self.import_config_picker.is_visible() { self.import_config_picker.move_down(); }
+                    else if self.command_palette.is_visible() { self.command_palette.move_down(); }
                 }
                 _ => {}
             }

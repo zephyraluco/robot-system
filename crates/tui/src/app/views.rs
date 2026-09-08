@@ -61,15 +61,15 @@ impl App {
             || self.bypass_permissions_dialog.visible
             || self.ask_user_dialog.visible
             || self.onboarding_dialog.visible
-            || self.import_config_picker.visible
-            || self.connect_dialog.visible
+            || self.import_config_picker.is_visible()
+            || self.connect_dialog.is_visible()
             || self.key_input_dialog.visible
             || self.custom_provider_dialog.visible
             || self.free_mode_dialog.visible
             || self.device_auth_dialog.visible
-            || self.command_palette.visible
+            || self.command_palette.is_visible()
             || self.elicitation.visible
-            || self.model_picker.visible
+            || self.model_picker.is_visible()
             || self.effort_picker.visible
             || self.session_browser.visible
             || self.session_branching.visible
