@@ -4,10 +4,8 @@ use super::*;
 
 use claurst_core::config::Config;
 use claurst_core::types::Role;
-use super::keys::{
-    key_event_to_keystroke, layout_to_latin, normalize_char_with_shift,
-    normalize_layout_shortcut_key,
-};
+use super::keys::{key_event_to_keystroke, layout_to_latin, normalize_layout_shortcut_key};
+use crate::input::normalize_char_with_shift;
 use super::types::{ContextMenuItem, ContextMenuState};
 
     

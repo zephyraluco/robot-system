@@ -65,8 +65,8 @@ impl App {
             || self.connect_dialog.is_visible()
             || self.key_input_dialog.visible
             || self.custom_provider_dialog.visible
-            || self.free_mode_dialog.visible
-            || self.device_auth_dialog.visible
+            || self.free_mode_dialog.is_visible()
+            || self.device_auth_dialog.is_visible()
             || self.command_palette.is_visible()
             || self.elicitation.visible
             || self.model_picker.is_visible()

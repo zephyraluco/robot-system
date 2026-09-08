@@ -1,5 +1,50 @@
 // input.rs — Slash command helpers and input mode types.
 
+use crossterm::event::KeyModifiers;
+
+/// Apply the US-QWERTY shift map to a printable character reported as
+/// unshifted + SHIFT (kitty keyboard protocol terminals).
+///
+/// **Keyboard layout limitation**: This only works correctly for US QWERTY keyboards.
+/// Other layouts (AZERTY, QWERTZ, etc.) have different shift mappings. For non-US
+/// layouts, we rely on the terminal to send the correctly shifted character, which
+/// most modern terminals do (especially with kitty protocol enabled).
+pub fn normalize_char_with_shift(c: char, modifiers: KeyModifiers) -> char {
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return c;
+    }
+
+    if c.is_ascii_lowercase() {
+        return c.to_ascii_uppercase();
+    }
+
+    // Map unshifted number/symbol keys to their shifted equivalents (US QWERTY)
+    match c {
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        ';' => ':',
+        '\'' => '"',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        '\\' => '|',
+        '`' => '~',
+        _ => c,
+    }
+}
+
 /// Check whether a string looks like a slash command (e.g. "/help").
 pub fn is_slash_command(input: &str) -> bool {
     input.starts_with('/') && !input.starts_with("//")

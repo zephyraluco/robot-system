@@ -200,9 +200,9 @@ pub use onboarding_dialog::{OnboardingDialogState, render_onboarding_dialog};
 pub use dialog_select::{DialogSelectState, SelectItem};
 pub use key_input_dialog::{KeyInputDialogState, render_key_input_dialog};
 pub use custom_provider_dialog::{CustomProviderDialogState, CustomProviderField, render_custom_provider_dialog};
-pub use free_mode_dialog::{FreeModeDialogState, FreeModeField, render_free_mode_dialog};
+pub use free_mode_dialog::{FreeModeDialogState, FreeModeField};
 // (FreeModeField type is now per-provider; legacy callers may still import both names.)
-pub use device_auth_dialog::{DeviceAuthDialogState, DeviceAuthStatus, DeviceAuthEvent, render_device_auth_dialog};
+pub use device_auth_dialog::{DeviceAuthDialogState, DeviceAuthStatus, DeviceAuthEvent};
 pub use file_injection::{parse_at_refs, build_file_blocks, AtFileRef, AtFileIssue};
 pub use file_injection_dialog::{FileInjectionDialogState, FileInjectionOutcome, render_file_injection_dialog};
 

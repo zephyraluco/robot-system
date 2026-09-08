@@ -8,27 +8,27 @@
 // providers the router can fall back to. Minimum 1 key to enable; more
 // is better.
 //
+// Built on the shared `DialogCore` + `DialogBehavior` base: the modal frame,
+// overlay, title bar and the key/mouse capture pipeline come from the base;
+// this module only implements field navigation/editing (`on_key`) and the
+// body/footer rendering (`render_content`). The active field is stored in
+// `core.focus_zone()` so the pipeline's built-in Tab / Shift+Tab cycling
+// moves between fields.
+//
 // Layout:
-//   ┌─ Connect Free (multi-provider) ───────────────── esc ┐
-//   │  Stack the free tiers from many providers behind     │
-//   │  one endpoint. ⚠ context management is worse than    │
-//   │  paid models; long sessions truncate aggressively.   │
+//   ┌─ Connect Free (multi-provider — 2/11 keys) ──────────┐
+//   │ Stack free tiers behind one endpoint.                │
+//   │ TIP More keys = better availability and higher caps. │
 //   │                                                      │
-//   │  Paste any keys you have — more = better availability│
-//   │  and higher daily caps. Minimum 1 key to enable.     │
-//   │                                                      │
-//   │  ▸ Groq                          console.groq.com/.. │
-//   │    ••••••••AbCd_                                     │
-//   │    Cerebras                      cloud.cerebras.ai   │
-//   │    paste your API key here...                        │
-//   │    Google Gemini                 aistudio.google.com │
-//   │    ••••••••wxyz                                      │
-//   │    …7 more — tab/↑↓ to scroll                        │
-//   │                                                      │
-//   │  ↑/↓ next   enter confirm (1+ keys)                  │
+//   │ ▸ Groq                          console.groq.com/..  │
+//   │   ••••••••AbCd_                                      │
+//   │   Cerebras                      cloud.cerebras.ai    │
+//   │   paste your API key here...                         │
+//   │   …↑/↓ to scroll                                     │
+//   │ ↑/↓ next   enter confirm (2 keys — more = better)    │
 //   └──────────────────────────────────────────────────────┘
 
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -37,7 +37,10 @@ use ratatui::Frame;
 
 use claurst_api::{FreeUpstream, FREE_CATALOG};
 
-use crate::overlays::{centered_rect, render_dark_overlay, render_dialog_bg, CLAURST_PANEL_BG};
+use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::input::normalize_char_with_shift;
+use crate::keyboard_enhancement_active;
+use crate::overlays::{CLAURST_PANEL_BG, ModalLayout};
 
 /// One row in the dialog — one provider's name, URL, and the user's
 /// (possibly empty) typed key.
@@ -48,9 +51,8 @@ pub struct FreeModeField {
 }
 
 pub struct FreeModeDialogState {
-    pub visible: bool,
+    pub core: DialogCore,
     pub fields: Vec<FreeModeField>,
-    pub active_idx: usize,
     /// First visible field index (for scrolling when fields > viewport).
     pub scroll_offset: usize,
 }
@@ -70,18 +72,35 @@ impl FreeModeDialogState {
                 key: String::new(),
             })
             .collect();
+        // header/footer heights are 0: the title row and footer hint are part
+        // of the body paragraph, matching the original hand-rolled layout.
+        let core = DialogCore::new(Self::title_for(0), 84, 24)
+            .header_height(0)
+            .footer_height(0);
         Self {
-            visible: false,
+            core,
             fields,
-            active_idx: 0,
             scroll_offset: 0,
         }
+    }
+
+    fn title_for(filled: usize) -> String {
+        format!(
+            "Connect Free (multi-provider \u{2014} {}/{} keys)",
+            filled,
+            FREE_CATALOG.len()
+        )
+    }
+
+    /// Push the current filled-key count into the dialog title.
+    fn sync_title(&mut self) {
+        let filled = self.filled_count();
+        self.core.set_title(Self::title_for(filled));
     }
 
     /// Open the dialog, pre-populating each row from `existing[upstream.id]`
     /// when present.
     pub fn open(&mut self, existing: &[(&str, String)]) {
-        self.visible = true;
         for field in &mut self.fields {
             field.key.clear();
         }
@@ -91,32 +110,48 @@ impl FreeModeDialogState {
             }
         }
         // Start on the first empty field, or the first field if none are empty.
-        self.active_idx = self
+        let start = self
             .fields
             .iter()
             .position(|f| f.key.is_empty())
             .unwrap_or(0);
+        self.core.set_title(Self::title_for(self.filled_count()));
+        self.core.open();
+        self.core.set_focus_zone(start);
         self.scroll_offset = 0;
         self.ensure_active_visible();
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         for field in &mut self.fields {
             field.key.clear();
         }
-        self.active_idx = 0;
+        self.core.set_focus_zone(0);
         self.scroll_offset = 0;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Number of rows shown at once in the scrolling viewport.
     pub const VISIBLE_ROWS: usize = 4;
 
+    /// Index of the field the user is currently editing (stored in the
+    /// embedded `DialogCore`'s focus zone so Tab / Shift+Tab cycle it).
+    pub fn active_idx(&self) -> usize {
+        self.core
+            .focus_zone()
+            .min(self.fields.len().saturating_sub(1))
+    }
+
     pub fn move_next(&mut self) {
         if self.fields.is_empty() {
             return;
         }
-        self.active_idx = (self.active_idx + 1) % self.fields.len();
+        let next = (self.active_idx() + 1) % self.fields.len();
+        self.core.set_focus_zone(next);
         self.ensure_active_visible();
     }
 
@@ -124,32 +159,38 @@ impl FreeModeDialogState {
         if self.fields.is_empty() {
             return;
         }
-        self.active_idx = if self.active_idx == 0 {
+        let prev = if self.active_idx() == 0 {
             self.fields.len() - 1
         } else {
-            self.active_idx - 1
+            self.active_idx() - 1
         };
+        self.core.set_focus_zone(prev);
         self.ensure_active_visible();
     }
 
     fn ensure_active_visible(&mut self) {
-        if self.active_idx < self.scroll_offset {
-            self.scroll_offset = self.active_idx;
-        } else if self.active_idx >= self.scroll_offset + Self::VISIBLE_ROWS {
-            self.scroll_offset = self.active_idx + 1 - Self::VISIBLE_ROWS;
+        let active = self.active_idx();
+        if active < self.scroll_offset {
+            self.scroll_offset = active;
+        } else if active >= self.scroll_offset + Self::VISIBLE_ROWS {
+            self.scroll_offset = active + 1 - Self::VISIBLE_ROWS;
         }
     }
 
     pub fn insert_char(&mut self, c: char) {
-        if let Some(field) = self.fields.get_mut(self.active_idx) {
+        let idx = self.active_idx();
+        if let Some(field) = self.fields.get_mut(idx) {
             field.key.push(c);
         }
+        self.sync_title();
     }
 
     pub fn backspace(&mut self) {
-        if let Some(field) = self.fields.get_mut(self.active_idx) {
+        let idx = self.active_idx();
+        if let Some(field) = self.fields.get_mut(idx) {
             field.key.pop();
         }
+        self.sync_title();
     }
 
     /// Enabling Free mode requires at least one non-empty key. More is better.
@@ -182,7 +223,195 @@ impl FreeModeDialogState {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// DialogBehavior — shared modal frame + key/mouse capture pipeline
+// ---------------------------------------------------------------------------
+
+impl DialogBehavior for FreeModeDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    /// One focus zone per provider field: the pipeline's built-in Tab /
+    /// Shift+Tab cycling then moves between fields, matching the old
+    /// `Tab → move_next` behaviour.
+    fn focus_zones(&self) -> usize {
+        self.fields.len()
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Down => {
+                self.move_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Up => {
+                self.move_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => {
+                if self.can_submit() {
+                    // The caller picks the values up via `take_values()`
+                    // (which also closes the dialog).
+                    DialogOutcome::Confirmed
+                } else {
+                    self.move_next();
+                    DialogOutcome::Handled
+                }
+            }
+            KeyCode::Backspace => {
+                self.backspace();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::ALT) =>
+            {
+                let c = if keyboard_enhancement_active() {
+                    normalize_char_with_shift(c, key.modifiers)
+                } else {
+                    c
+                };
+                self.insert_char(c);
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let pink = Color::Rgb(233, 30, 99);
+        let dim = Color::Rgb(90, 90, 90);
+        let muted = Color::Rgb(180, 180, 180);
+        let tip = Color::Rgb(120, 210, 150);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // Title row: dynamic title on the left, right-aligned "esc" hint on
+        // the same line (original hand-rolled layout).
+        let title_text = self.core.title().to_string();
+        let title_pad = layout
+            .body_area
+            .width
+            .saturating_sub(title_text.chars().count() as u16 + 5) as usize;
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {}", title_text),
+                Style::default().fg(pink).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:>width$}", "esc ", width = title_pad),
+                Style::default().fg(dim),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        // Description (one tight line) + tip.
+        lines.push(Line::from(vec![Span::styled(
+            " Stack free tiers behind one endpoint.",
+            Style::default().fg(muted),
+        )]));
+        lines.push(Line::from(vec![
+            Span::styled(" TIP ", Style::default().fg(tip).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "More keys = better availability and higher caps.",
+                Style::default().fg(tip),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        // Field viewport
+        let start = self.scroll_offset;
+        let end = (start + Self::VISIBLE_ROWS).min(self.fields.len());
+        if start > 0 {
+            lines.push(Line::from(vec![Span::styled(
+                format!("   \u{2191} {} above", start),
+                Style::default().fg(dim),
+            )]));
+        }
+
+        let row_label_width: usize = self
+            .fields
+            .iter()
+            .map(|f| f.upstream.title.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(8);
+
+        let active = self.active_idx();
+        for idx in start..end {
+            let field = &self.fields[idx];
+            let is_active = idx == active;
+            let marker = if is_active { "\u{25b8}" } else { " " };
+            let label_style = if is_active {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(muted)
+            };
+            let url_style = Style::default().fg(dim);
+
+            let label_padded =
+                format!("{:<width$}", field.upstream.title, width = row_label_width);
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", marker), Style::default().fg(pink)),
+                Span::styled(label_padded, label_style),
+                Span::styled("   ", Style::default()),
+                Span::styled(field.upstream.key_url.to_string(), url_style),
+            ]));
+
+            let masked = mask_key(&field.key);
+            let input_style = if field.key.is_empty() {
+                Style::default().fg(dim)
+            } else if is_active {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let cursor = if is_active { "_" } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled("     ", Style::default()),
+                Span::styled(masked, input_style),
+                Span::styled(cursor.to_string(), Style::default().fg(pink)),
+            ]));
+        }
+
+        if end < self.fields.len() {
+            lines.push(Line::from(vec![Span::styled(
+                format!("   \u{2193} {} more", self.fields.len() - end),
+                Style::default().fg(dim),
+            )]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Footer hint (part of the same paragraph, as in the original layout).
+        let confirm_hint = if self.can_submit() {
+            let filled = self.filled_count();
+            format!(
+                "enter confirm ({} key{} \u{2014} more = better)",
+                filled,
+                if filled == 1 { "" } else { "s" }
+            )
+        } else {
+            "paste at least 1 key \u{2014} as many as you can add is better".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" \u{2191}/\u{2193}", Style::default().fg(dim)),
+            Span::styled(" next field   ", Style::default().fg(dim)),
+            Span::styled(confirm_hint, Style::default().fg(dim)),
+        ]));
+
+        let para = Paragraph::new(lines).bg(CLAURST_PANEL_BG);
+        frame.render_widget(para, layout.body_area);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Key masking helper
 // ---------------------------------------------------------------------------
 
 fn mask_key(input: &str) -> String {
@@ -199,157 +428,26 @@ fn mask_key(input: &str) -> String {
     }
 }
 
-pub fn render_free_mode_dialog(frame: &mut Frame, state: &FreeModeDialogState, area: Rect) {
-    if !state.visible {
-        return;
-    }
-
-    let pink = Color::Rgb(233, 30, 99);
-    let dim = Color::Rgb(90, 90, 90);
-    let muted = Color::Rgb(180, 180, 180);
-    let tip = Color::Rgb(120, 210, 150);
-    let dialog_bg = CLAURST_PANEL_BG;
-
-    render_dark_overlay(frame, area);
-
-    let width = 84u16.min(area.width.saturating_sub(4));
-    let height = 24u16.min(area.height.saturating_sub(2));
-    let dialog_area = centered_rect(width, height, area);
-    render_dialog_bg(frame, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let total = state.fields.len();
-    let filled = state.filled_count();
-    let title_text = format!("Connect Free (multi-provider \u{2014} {}/{} keys)", filled, total);
-    let title_pad = inner
-        .width
-        .saturating_sub(title_text.chars().count() as u16 + 5) as usize;
-
-    let confirm_hint = if state.can_submit() {
-        format!(" enter confirm ({} key{} — more = better)",
-            filled,
-            if filled == 1 { "" } else { "s" })
-    } else {
-        " paste at least 1 key — as many as you can add is better".to_string()
-    };
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Title row
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {}", title_text),
-            Style::default().fg(pink).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{:>width$}", "esc ", width = title_pad),
-            Style::default().fg(dim),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    // Description (one tight line) + tip.
-    lines.push(Line::from(vec![Span::styled(
-        " Stack free tiers behind one endpoint.",
-        Style::default().fg(muted),
-    )]));
-    lines.push(Line::from(vec![
-        Span::styled(" TIP ", Style::default().fg(tip).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            "More keys = better availability and higher caps.",
-            Style::default().fg(tip),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    // Field viewport
-    let start = state.scroll_offset;
-    let end = (start + FreeModeDialogState::VISIBLE_ROWS).min(state.fields.len());
-    if start > 0 {
-        lines.push(Line::from(vec![Span::styled(
-            format!("   \u{2191} {} above", start),
-            Style::default().fg(dim),
-        )]));
-    }
-
-    let row_label_width: usize = state
-        .fields
-        .iter()
-        .map(|f| f.upstream.title.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(8);
-
-    for idx in start..end {
-        let field = &state.fields[idx];
-        let active = idx == state.active_idx;
-        let marker = if active { "\u{25b8}" } else { " " };
-        let label_style = if active {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(muted)
-        };
-        let url_style = Style::default().fg(dim);
-
-        let label_padded =
-            format!("{:<width$}", field.upstream.title, width = row_label_width);
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", marker), Style::default().fg(pink)),
-            Span::styled(label_padded, label_style),
-            Span::styled("   ", Style::default()),
-            Span::styled(field.upstream.key_url.to_string(), url_style),
-        ]));
-
-        let masked = mask_key(&field.key);
-        let input_style = if field.key.is_empty() {
-            Style::default().fg(dim)
-        } else if active {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let cursor = if active { "_" } else { "" };
-        lines.push(Line::from(vec![
-            Span::styled("     ", Style::default()),
-            Span::styled(masked, input_style),
-            Span::styled(cursor.to_string(), Style::default().fg(pink)),
-        ]));
-    }
-
-    if end < state.fields.len() {
-        lines.push(Line::from(vec![Span::styled(
-            format!("   \u{2193} {} more", state.fields.len() - end),
-            Style::default().fg(dim),
-        )]));
-    }
-
-    lines.push(Line::from(""));
-
-    // Footer
-    lines.push(Line::from(vec![
-        Span::styled(" \u{2191}/\u{2193}", Style::default().fg(dim)),
-        Span::styled(" next field   ", Style::default().fg(dim)),
-        Span::styled(confirm_hint, Style::default().fg(dim)),
-    ]));
-
-    let para = Paragraph::new(lines).bg(dialog_bg);
-    frame.render_widget(para, inner);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
 
     #[test]
     fn defaults_hidden() {
         let s = FreeModeDialogState::new();
-        assert!(!s.visible);
+        assert!(!s.is_visible());
         assert_eq!(s.fields.len(), FREE_CATALOG.len());
     }
 
@@ -357,8 +455,8 @@ mod tests {
     fn open_starts_on_first_empty_field() {
         let mut s = FreeModeDialogState::new();
         s.open(&[]);
-        assert!(s.visible);
-        assert_eq!(s.active_idx, 0);
+        assert!(s.is_visible());
+        assert_eq!(s.active_idx(), 0);
     }
 
     #[test]
@@ -367,7 +465,7 @@ mod tests {
         s.open(&[(FREE_CATALOG[0].id, "existing-key".to_string())]);
         assert_eq!(s.fields[0].key, "existing-key");
         // First empty is the second field.
-        assert_eq!(s.active_idx, 1);
+        assert_eq!(s.active_idx(), 1);
     }
 
     #[test]
@@ -375,18 +473,17 @@ mod tests {
         let mut s = FreeModeDialogState::new();
         s.open(&[]);
         let n = s.fields.len();
-        s.active_idx = n - 1;
+        s.core.set_focus_zone(n - 1);
         s.move_next();
-        assert_eq!(s.active_idx, 0);
+        assert_eq!(s.active_idx(), 0);
     }
 
     #[test]
     fn move_prev_wraps() {
         let mut s = FreeModeDialogState::new();
         s.open(&[]);
-        s.active_idx = 0;
         s.move_prev();
-        assert_eq!(s.active_idx, s.fields.len() - 1);
+        assert_eq!(s.active_idx(), s.fields.len() - 1);
     }
 
     #[test]
@@ -397,8 +494,8 @@ mod tests {
             s.move_next();
         }
         assert!(s.scroll_offset > 0);
-        assert!(s.active_idx >= s.scroll_offset);
-        assert!(s.active_idx < s.scroll_offset + FreeModeDialogState::VISIBLE_ROWS);
+        assert!(s.active_idx() >= s.scroll_offset);
+        assert!(s.active_idx() < s.scroll_offset + FreeModeDialogState::VISIBLE_ROWS);
     }
 
     #[test]
@@ -434,7 +531,7 @@ mod tests {
         assert_eq!(values.len(), 2);
         assert_eq!(values[0], (FREE_CATALOG[0].id, "a".to_string()));
         assert_eq!(values[1], (FREE_CATALOG[1].id, "b".to_string()));
-        assert!(!s.visible);
+        assert!(!s.is_visible());
     }
 
     #[test]
@@ -442,5 +539,87 @@ mod tests {
         assert_eq!(mask_key(""), "paste your API key here...");
         assert_eq!(mask_key("abc"), "abc");
         assert_eq!(mask_key("abcdefgh"), "\u{2022}\u{2022}\u{2022}\u{2022}efgh");
+    }
+
+    // ---- DialogBehavior pipeline ----------------------------------------
+
+    #[test]
+    fn esc_closes_via_pipeline() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        let out = s.handle_key(key(KeyCode::Esc));
+        assert_eq!(out, DialogOutcome::Cancelled);
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn tab_cycles_fields_via_pipeline() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        let out = s.handle_key(key(KeyCode::Tab));
+        assert_eq!(out, DialogOutcome::Handled);
+        assert_eq!(s.active_idx(), 1);
+        s.handle_key(key(KeyCode::BackTab));
+        assert_eq!(s.active_idx(), 0);
+    }
+
+    #[test]
+    fn enter_without_keys_moves_next_not_confirmed() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        let out = s.handle_key(key(KeyCode::Enter));
+        assert_eq!(out, DialogOutcome::Handled);
+        assert_eq!(s.active_idx(), 1);
+        assert!(s.is_visible());
+    }
+
+    #[test]
+    fn enter_with_key_confirms() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        s.insert_char('k');
+        let out = s.handle_key(key(KeyCode::Enter));
+        assert_eq!(out, DialogOutcome::Confirmed);
+        // Caller closes via take_values().
+        assert!(s.is_visible());
+    }
+
+    #[test]
+    fn char_keys_edit_active_field_via_pipeline() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        s.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(s.fields[0].key, "x");
+        s.handle_key(key(KeyCode::Backspace));
+        assert_eq!(s.fields[0].key, "");
+    }
+
+    #[test]
+    fn modal_swallows_unhandled_keys() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        let out = s.handle_key(key(KeyCode::F(5)));
+        assert_eq!(out, DialogOutcome::Handled);
+        assert!(s.is_visible());
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut s = FreeModeDialogState::new();
+        s.open(&[]);
+        s.insert_char('k');
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| DialogBehavior::render(&s, frame, frame.area()))
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(content.contains("Connect Free"));
+        assert!(content.contains("Groq"));
     }
 }

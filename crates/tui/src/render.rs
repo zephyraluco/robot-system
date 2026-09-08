@@ -25,7 +25,6 @@ use crate::ask_user_dialog::render_ask_user_dialog;
 use crate::onboarding_dialog::render_onboarding_dialog;
 use crate::key_input_dialog::render_key_input_dialog;
 use crate::custom_provider_dialog::render_custom_provider_dialog;
-use crate::device_auth_dialog::render_device_auth_dialog;
 use crate::elicitation_dialog::render_elicitation_dialog;
 use crate::figures;
 use crate::hooks_config_menu::render_hooks_config_menu;
@@ -795,13 +794,13 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // "Free" composite-provider setup dialog (Zen + OpenRouter).
-    if app.free_mode_dialog.visible {
-        crate::free_mode_dialog::render_free_mode_dialog(frame, &app.free_mode_dialog, size);
+    if app.free_mode_dialog.is_visible() {
+        app.free_mode_dialog.render(frame, size);
     }
 
     // Device code / browser auth dialog (GitHub Copilot, Anthropic OAuth)
-    if app.device_auth_dialog.visible {
-        render_device_auth_dialog(frame, &app.device_auth_dialog, size);
+    if app.device_auth_dialog.is_visible() {
+        app.device_auth_dialog.render(frame, size);
     }
 
     // Ctrl+K command palette

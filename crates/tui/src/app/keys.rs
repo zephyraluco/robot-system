@@ -6,6 +6,7 @@ use crate::dialog::DialogBehavior as _;
 use crate::diff_viewer::DiffPane;
 use crate::export_dialog::ExportFormat;
 use crate::notifications::NotificationKind;
+use crate::input::normalize_char_with_shift;
 use crate::overlays::HistorySearchOverlay;
 use crate::prompt_input::VimMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -52,54 +53,8 @@ pub(super) fn layout_to_latin(c: char) -> String {
     mapped.unwrap_or(lower).to_string()
 }
 
-/// Apply shift transformation to a character based on standard US QWERTY layout.
-/// Handles both ASCII lowercase letters and number/symbol keys.
-///
-/// **Why this exists**: Terminals that support the kitty keyboard protocol send
-/// unshifted characters with modifier flags instead of pre-shifted characters
-/// (e.g., Shift+1 arrives as '1' + SHIFT instead of '!'). This function normalizes
-/// them to the expected shifted characters.
-///
-/// **Keyboard layout limitation**: This only works correctly for US QWERTY keyboards.
-/// Other layouts (AZERTY, QWERTZ, etc.) have different shift mappings. For non-US
-/// layouts, we rely on the terminal to send the correctly shifted character, which
-/// most modern terminals do (especially with kitty protocol enabled).
-pub(super) fn normalize_char_with_shift(c: char, modifiers: KeyModifiers) -> char {
-    if !modifiers.contains(KeyModifiers::SHIFT) {
-        return c;
-    }
-
-    if c.is_ascii_lowercase() {
-        return c.to_ascii_uppercase();
-    }
-
-    // Map unshifted number/symbol keys to their shifted equivalents (US QWERTY)
-    match c {
-        '1' => '!',
-        '2' => '@',
-        '3' => '#',
-        '4' => '$',
-        '5' => '%',
-        '6' => '^',
-        '7' => '&',
-        '8' => '*',
-        '9' => '(',
-        '0' => ')',
-        '-' => '_',
-        '=' => '+',
-        '[' => '{',
-        ']' => '}',
-        ';' => ':',
-        '\'' => '"',
-        ',' => '<',
-        '.' => '>',
-        '/' => '?',
-        '\\' => '|',
-        '`' => '~',
-        _ => c,
-    }
-}
-
+/// The shift normalization lives in [`crate::input::normalize_char_with_shift`]
+/// so the DialogCore-based dialogs can share it.
 pub(super) fn key_event_to_keystroke(key: &KeyEvent) -> Option<ParsedKeystroke> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt  = key.modifiers.contains(KeyModifiers::ALT);
@@ -383,16 +338,17 @@ impl App {
             return false;
         }
 
-        // Device code / browser auth dialog (GitHub Copilot, Anthropic OAuth)
-        if self.device_auth_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.device_auth_dialog.close();
-                    self.device_auth_pending = None;
-                }
-                _ if matches!(self.device_auth_dialog.status, crate::device_auth_dialog::DeviceAuthStatus::Success(_)) => {
-                    // Any key after success -> store credential and close
-                    if let crate::device_auth_dialog::DeviceAuthStatus::Success(ref token) = self.device_auth_dialog.status {
+        // Device code / browser auth dialog (GitHub Copilot, Anthropic OAuth).
+        // DialogCore-based: the dialog swallows every key while waiting; any
+        // key after Success closes it as `Confirmed` (store the credential),
+        // any key after Error / Esc closes it as `Cancelled`.
+        if self.device_auth_dialog.is_visible() {
+            let out = self.device_auth_dialog.handle_key(key);
+            if out.is_close() {
+                if out.is_confirmed() {
+                    if let crate::device_auth_dialog::DeviceAuthStatus::Success(ref token) =
+                        self.device_auth_dialog.status
+                    {
                         let provider_id = self.device_auth_dialog.provider_id.clone();
                         let provider_name = self.device_auth_dialog.provider_name.clone();
                         let token = token.clone();
@@ -427,18 +383,10 @@ impl App {
                             &provider_id,
                             credential,
                         );
-                        self.device_auth_pending = None;
-                        self.device_auth_dialog.close();
                         self.activate_provider(provider_id, provider_name, "Connected to");
-                        return false;
                     }
                 }
-                _ if matches!(self.device_auth_dialog.status, crate::device_auth_dialog::DeviceAuthStatus::Error(_)) => {
-                    // Any key after error -> close
-                    self.device_auth_dialog.close();
-                    self.device_auth_pending = None;
-                }
-                _ => {} // Ignore other keys while waiting
+                self.device_auth_pending = None;
             }
             return false;
         }
@@ -528,58 +476,43 @@ impl App {
 
         // "Free" composite-provider setup dialog (collects any subset of the
         // free-tier upstream keys; min 1 to enable, more = better).
-        if self.free_mode_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.free_mode_dialog.close();
-                }
-                KeyCode::Tab | KeyCode::Down => {
-                    self.free_mode_dialog.move_next();
-                }
-                KeyCode::BackTab | KeyCode::Up => {
-                    self.free_mode_dialog.move_prev();
-                }
-                KeyCode::Enter => {
-                    if self.free_mode_dialog.can_submit() {
-                        let values = self.free_mode_dialog.take_values();
-                        for (provider_id, key) in values {
-                            self.auth_store.set(
-                                provider_id,
-                                claurst_core::StoredCredential::ApiKey { key },
-                            );
-                        }
-                        self.activate_provider(
-                            "free".to_string(),
-                            "Free Mode".to_string(),
-                            "Connected to",
-                        );
+        // DialogCore-based: navigation / editing / Enter live in the dialog's
+        // `on_key`; Ctrl/Super+V paste stays app-level because it needs the
+        // notification system.
+        if self.free_mode_dialog.is_visible() {
+            if key.code == KeyCode::Char('v')
+                && (key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.modifiers.contains(KeyModifiers::SUPER))
+            {
+                // Paste clipboard text into the focused field (terminals
+                // that don't emit Event::Paste, e.g. Windows Terminal).
+                if let Some(text) = crate::image_paste::read_clipboard_text() {
+                    if text.is_empty() {
+                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
                     } else {
-                        self.free_mode_dialog.move_next();
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.free_mode_dialog.backspace();
-                }
-                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
-                    // Paste clipboard text into the focused field (terminals
-                    // that don't emit Event::Paste, e.g. Windows Terminal).
-                    if let Some(text) = crate::image_paste::read_clipboard_text() {
-                        if text.is_empty() {
-                            self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                        } else {
-                            for ch in text.chars() {
-                                self.free_mode_dialog.insert_char(ch);
-                            }
+                        for ch in text.chars() {
+                            self.free_mode_dialog.insert_char(ch);
                         }
-                    } else {
-                        self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                     }
+                } else {
+                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
-                KeyCode::Char(c) => {
-                    let c = self.shift_normalize(c, key.modifiers);
-                    self.free_mode_dialog.insert_char(c);
+                return false;
+            }
+            let out = self.free_mode_dialog.handle_key(key);
+            if out.is_confirmed() {
+                let values = self.free_mode_dialog.take_values();
+                for (provider_id, key) in values {
+                    self.auth_store.set(
+                        provider_id,
+                        claurst_core::StoredCredential::ApiKey { key },
+                    );
                 }
-                _ => {}
+                self.activate_provider(
+                    "free".to_string(),
+                    "Free Mode".to_string(),
+                    "Connected to",
+                );
             }
             return false;
         }
@@ -2445,7 +2378,7 @@ impl App {
             }
             return true;
         }
-        if self.free_mode_dialog.visible {
+        if self.free_mode_dialog.is_visible() {
             for ch in data.chars() {
                 self.free_mode_dialog.insert_char(ch);
             }
@@ -2481,7 +2414,7 @@ impl App {
             && !self.theme_screen.visible
             && !self.custom_provider_dialog.visible
             && !self.key_input_dialog.visible
-            && !self.free_mode_dialog.visible
+            && !self.free_mode_dialog.is_visible()
             && !self.elicitation.visible
             && self.prompt_input.vim_mode == crate::prompt_input::VimMode::Insert
     }

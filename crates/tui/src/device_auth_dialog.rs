@@ -4,15 +4,23 @@
 // Copilot (RFC 8628) and browser-based OAuth for Anthropic.  The actual
 // network requests run in a background tokio task; this module only owns the
 // display state.
+//
+// Built on the shared `DialogCore` + `DialogBehavior` base: the modal frame,
+// overlay, title bar and the key/mouse capture pipeline come from the base.
+// The dialog is display-only while waiting (all keys are swallowed by the
+// modal capture); any key after `Success` closes it affirmatively
+// (`DialogOutcome::Confirmed`) and any key after `Error` closes it as
+// `Cancelled` — the app event loop acts on those outcomes.
 
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::overlays::{centered_rect, render_dark_overlay, render_dialog_bg, CLAURST_PANEL_BG};
+use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{CLAURST_PANEL_BG, ModalLayout};
 
 // ---------------------------------------------------------------------------
 // Status enum
@@ -41,7 +49,7 @@ pub enum DeviceAuthStatus {
 // ---------------------------------------------------------------------------
 
 pub struct DeviceAuthDialogState {
-    pub visible: bool,
+    pub core: DialogCore,
     pub provider_id: String,
     pub provider_name: String,
     pub status: DeviceAuthStatus,
@@ -63,7 +71,11 @@ impl Default for DeviceAuthDialogState {
 impl DeviceAuthDialogState {
     pub fn new() -> Self {
         Self {
-            visible: false,
+            // header/footer heights are 0: the title row is part of the body
+            // paragraph, matching the original hand-rolled layout.
+            core: DialogCore::new("Connect", 64, 14)
+                .header_height(0)
+                .footer_height(0),
             provider_id: String::new(),
             provider_name: String::new(),
             status: DeviceAuthStatus::Idle,
@@ -77,27 +89,40 @@ impl DeviceAuthDialogState {
 
     /// Open the dialog for a specific provider and begin the auth flow.
     pub fn open(&mut self, provider_id: String, provider_name: String) {
-        self.visible = true;
         self.provider_id = provider_id;
         self.provider_name = provider_name;
         self.status = DeviceAuthStatus::WaitingForCode;
         self.user_code.clear();
         self.verification_uri.clear();
         self.device_code.clear();
+        self.core.set_title(format!("Connect {}", self.provider_name));
+        self.core.set_size(64, 14);
+        self.core.open();
     }
 
     /// Close and reset the dialog.
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.status = DeviceAuthStatus::Idle;
         self.auth_url.clear();
     }
 
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
+
     /// Switch to BrowserAuth status and store the URL so the dialog can
-    /// display it as a copy-paste fallback.
+    /// display it as a copy-paste fallback. The dialog grows to fit the
+    /// wrapped URL lines.
     pub fn set_browser_url(&mut self, url: String) {
         self.auth_url = url;
         self.status = DeviceAuthStatus::BrowserAuth;
+        let width = 64u16;
+        let body_width = width.saturating_sub(4).max(1);
+        let url_lines =
+            (self.auth_url.len() as u16).saturating_add(body_width - 1) / body_width;
+        let height = (14 + url_lines + 2).min(60);
+        self.core.set_size(width, height);
     }
 
     /// Set the device code information received from the authorization server.
@@ -158,172 +183,164 @@ pub enum DeviceAuthEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// DialogBehavior — shared modal frame + key/mouse capture pipeline
 // ---------------------------------------------------------------------------
 
-/// Render the device auth dialog overlay — OpenCode-style: dark overlay, no
-/// border, minimal and polished.
-pub fn render_device_auth_dialog(
-    frame: &mut Frame,
-    state: &DeviceAuthDialogState,
-    area: Rect,
-) {
-    if !state.visible {
-        return;
+impl DialogBehavior for DeviceAuthDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    let pink = Color::Rgb(233, 30, 99);
-    let dim = Color::Rgb(90, 90, 90);
-    let dialog_bg = CLAURST_PANEL_BG;
-    let green = Color::Rgb(80, 200, 120);
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    // ── Darken the entire background ──
-    render_dark_overlay(frame, area);
-
-    // ── Dialog size — taller when showing a browser URL ──
-    let width = 64u16.min(area.width.saturating_sub(4));
-    let height = if matches!(state.status, DeviceAuthStatus::BrowserAuth) && !state.auth_url.is_empty() {
-        let url_lines = (state.auth_url.len() as u16).saturating_add(width.saturating_sub(4) - 1) / width.saturating_sub(4).max(1);
-        (14 + url_lines + 2).min(area.height.saturating_sub(4))
-    } else {
-        14u16
-    };
-    let dialog_area = centered_rect(width, height, area);
-
-    // ── Fill dialog background (no border) ──
-    render_dialog_bg(frame, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    // ── Build lines ──
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Title row: "Connect {provider}" on left, "esc" on right
-    let title_text = format!("Connect {}", state.provider_name);
-    let title_pad = inner.width.saturating_sub(title_text.len() as u16 + 5) as usize;
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {}", title_text),
-            Style::default().fg(pink).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{:>width$}", "esc ", width = title_pad),
-            Style::default().fg(dim),
-        ),
-    ]));
-
-    // Status-dependent content
-    match &state.status {
-        DeviceAuthStatus::Idle | DeviceAuthStatus::WaitingForCode => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " Requesting device code...",
-                Style::default().fg(Color::Yellow),
-            )));
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match &self.status {
+            // Any key after success closes affirmatively; the app event loop
+            // then stores the credential and activates the provider.
+            DeviceAuthStatus::Success(_) => DialogOutcome::Confirmed,
+            // Any key after an error closes without action.
+            DeviceAuthStatus::Error(_) => DialogOutcome::Cancelled,
+            // While waiting, the modal capture swallows everything.
+            _ if key.code == KeyCode::Esc => DialogOutcome::Cancelled,
+            _ => DialogOutcome::Ignored,
         }
-        DeviceAuthStatus::ShowingCode | DeviceAuthStatus::Polling => {
-            let status_text = if state.status == DeviceAuthStatus::Polling {
-                " Checking for authorization..."
-            } else {
-                " Waiting for authorization..."
-            };
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " Enter this code:",
-                Style::default().fg(Color::Rgb(180, 180, 180)),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!("    {}", state.user_code),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled(" at ", Style::default().fg(dim)),
-                Span::styled(
-                    state.verification_uri.clone(),
-                    Style::default()
-                        .fg(pink)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            ]));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                status_text,
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        DeviceAuthStatus::BrowserAuth => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " Opening browser for authentication...",
-                Style::default().fg(Color::Yellow),
-            )));
-            if !state.auth_url.is_empty() {
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let pink = Color::Rgb(233, 30, 99);
+        let dim = Color::Rgb(90, 90, 90);
+        let green = Color::Rgb(80, 200, 120);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // Title row: "Connect {provider}" on the left, right-aligned "esc"
+        // hint on the same line (original hand-rolled layout).
+        let title_text = self.core.title().to_string();
+        let title_pad = layout
+            .body_area
+            .width
+            .saturating_sub(title_text.len() as u16 + 5) as usize;
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {}", title_text),
+                Style::default().fg(pink).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:>width$}", "esc ", width = title_pad),
+                Style::default().fg(dim),
+            ),
+        ]));
+
+        // Status-dependent content
+        match &self.status {
+            DeviceAuthStatus::Idle | DeviceAuthStatus::WaitingForCode => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    " If browser didn't open, visit:",
+                    " Requesting device code...",
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            DeviceAuthStatus::ShowingCode | DeviceAuthStatus::Polling => {
+                lines.push(Line::from(""));
+                let status_text = if self.status == DeviceAuthStatus::Polling {
+                    " Checking for authorization..."
+                } else {
+                    " Waiting for authorization..."
+                };
+                lines.push(Line::from(Span::styled(
+                    " Enter this code:",
                     Style::default().fg(Color::Rgb(180, 180, 180)),
                 )));
                 lines.push(Line::from(""));
-                // Wrap URL to dialog width
-                let max_w = inner.width.saturating_sub(2) as usize;
-                for chunk in state.auth_url.as_bytes().chunks(max_w.max(1)) {
-                    let s = String::from_utf8_lossy(chunk).into_owned();
-                    lines.push(Line::from(Span::styled(
-                        format!(" {}", s),
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", self.user_code),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled(" at ", Style::default().fg(dim)),
+                    Span::styled(
+                        self.verification_uri.clone(),
                         Style::default()
                             .fg(pink)
                             .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    status_text,
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            DeviceAuthStatus::BrowserAuth => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    " Opening browser for authentication...",
+                    Style::default().fg(Color::Yellow),
+                )));
+                if !self.auth_url.is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        " If browser didn't open, visit:",
+                        Style::default().fg(Color::Rgb(180, 180, 180)),
+                    )));
+                    lines.push(Line::from(""));
+                    // Wrap URL to dialog width
+                    let max_w = layout.body_area.width.saturating_sub(2) as usize;
+                    for chunk in self.auth_url.as_bytes().chunks(max_w.max(1)) {
+                        let s = String::from_utf8_lossy(chunk).into_owned();
+                        lines.push(Line::from(Span::styled(
+                            format!(" {}", s),
+                            Style::default()
+                                .fg(pink)
+                                .add_modifier(Modifier::UNDERLINED),
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        " (URL copied to clipboard)",
+                        Style::default().fg(dim),
+                    )));
+                } else {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        " Complete the login in your browser.",
+                        Style::default().fg(dim),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        " This dialog will update when done.",
+                        Style::default().fg(dim),
                     )));
                 }
+            }
+            DeviceAuthStatus::Success(_) => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    " (URL copied to clipboard)",
-                    Style::default().fg(dim),
+                    " \u{2714} Connected successfully!",
+                    Style::default()
+                        .fg(green)
+                        .add_modifier(Modifier::BOLD),
                 )));
-            } else {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    " Complete the login in your browser.",
-                    Style::default().fg(dim),
-                )));
-                lines.push(Line::from(Span::styled(
-                    " This dialog will update when done.",
+                    " Press any key to continue.",
                     Style::default().fg(dim),
                 )));
             }
-        }
-        DeviceAuthStatus::Success(_) => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " \u{2714} Connected successfully!",
-                Style::default()
-                    .fg(green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                " Press any key to continue.",
-                Style::default().fg(dim),
-            )));
-        }
-        DeviceAuthStatus::Error(msg) => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!(" Error: {}", msg),
-                Style::default().fg(Color::Red),
-            )));
-        }
-    };
+            DeviceAuthStatus::Error(msg) => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!(" Error: {}", msg),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+        };
 
-    let para = Paragraph::new(lines).bg(dialog_bg);
-    frame.render_widget(para, inner);
+        let para = Paragraph::new(lines).bg(CLAURST_PANEL_BG);
+        frame.render_widget(para, layout.body_area);
+    }
 }
