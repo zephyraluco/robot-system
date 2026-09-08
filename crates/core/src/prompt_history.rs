@@ -240,6 +240,9 @@ async fn store_paste(hash: String, text: String) {
             if let Err(e) = f.write_all(text.as_bytes()).await {
                 debug!("Failed to write paste {}: {}", hash, e);
             }
+            // tokio File writes complete asynchronously on the blocking pool;
+            // flush so the data is durable before the handle is dropped.
+            let _ = f.flush().await;
         }
         Err(e) => {
             debug!("Failed to create paste file {}: {}", hash, e);
@@ -321,6 +324,9 @@ async fn flush_entries(entries: Vec<LogEntry>) {
     if let Err(e) = file.write_all(lines.as_bytes()).await {
         debug!("Failed to append to history file: {}", e);
     }
+    // tokio File writes complete asynchronously on the blocking pool; flush
+    // so the appended lines are durable before the handle is dropped.
+    let _ = file.flush().await;
 }
 
 // ---------------------------------------------------------------------------

@@ -320,6 +320,12 @@ pub async fn write_transcript_entry(
         .await?;
 
     file.write_all(line.as_bytes()).await?;
+    // tokio's `File::poll_write` returns `Ready` as soon as the write is
+    // *dispatched* to the blocking pool, not when the syscall completes.
+    // Dropping the file here would leave the write in flight, so a
+    // immediately-following read could miss the line (observed as a flaky
+    // failure on arm64 CI). `flush` waits for the pending write to finish.
+    file.flush().await?;
     // Transcripts may contain secrets read into context; keep them
     // owner-only (issue #212).
     crate::accounts::set_user_only_perms(path);
