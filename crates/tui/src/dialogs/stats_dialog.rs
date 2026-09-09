@@ -2,7 +2,9 @@
 //!
 //! Four-tab overlay: Overview | Daily Tokens | Cost Heatmap | Models
 //! Data source: ~/.claurst/stats.jsonl (append-only per-turn usage log)
+//! Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -10,13 +12,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::overlays::{
-    begin_modal_buf, modal_header_line_area, render_modal_title_buf, CLAURST_ACCENT,
-    CLAURST_MUTED, CLAURST_PANEL_BG,
-};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{ModalLayout, CLAURST_ACCENT, CLAURST_MUTED, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -161,7 +162,8 @@ pub enum StatsTab {
 
 #[derive(Debug, Clone)]
 pub struct StatsDialogState {
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     pub tab: StatsTab,
     pub range_days: u32,  // 7, 30, or 0 = all
     pub data: Option<AggregatedStats>,
@@ -177,7 +179,9 @@ pub struct StatsDialogState {
 impl StatsDialogState {
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Cost & stats", 92, 30)
+                .header_height(2)
+                .footer_height(1),
             tab: StatsTab::Overview,
             range_days: 30,
             data: None,
@@ -195,11 +199,15 @@ impl StatsDialogState {
         self.current_streak_days = current;
         self.longest_streak_days = longest;
         self.data = Some(stats);
-        self.visible = true;
+        self.core.open();
         self.scroll = 0;
     }
 
-    pub fn close(&mut self) { self.visible = false; }
+    pub fn close(&mut self) { self.core.close(); }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
 
     pub fn next_tab(&mut self) {
         self.tab = match self.tab {
@@ -249,6 +257,92 @@ impl StatsDialogState {
 
 impl Default for StatsDialogState {
     fn default() -> Self { Self::new() }
+}
+
+impl DialogBehavior for StatsDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Char('q') => {
+                self.close();
+                DialogOutcome::Cancelled
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                self.next_tab();
+                DialogOutcome::Handled
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                self.prev_tab();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char('r') => {
+                self.cycle_range();
+                DialogOutcome::Handled
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_add(1);
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let buf = frame.buffer_mut();
+
+        // Tab line on the second header row (the title bar is drawn by the
+        // `DialogBehavior::render` pipeline).
+        let tab_line = Line::from(vec![
+            tab_span("Overview",      self.tab == StatsTab::Overview),
+            Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
+            tab_span("Daily Tokens",  self.tab == StatsTab::DailyTokens),
+            Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
+            tab_span("Cost Heatmap",  self.tab == StatsTab::CostHeatmap),
+            Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
+            tab_span("Models",        self.tab == StatsTab::Models),
+        ]);
+        if layout.header_area.height > 1 {
+            let tab_area = Rect {
+                x: layout.header_area.x,
+                y: layout.header_area.y + 1,
+                width: layout.header_area.width,
+                height: layout.header_area.height - 1,
+            };
+            Paragraph::new(tab_line).render(tab_area, buf);
+        }
+
+        let content_area = layout.body_area;
+
+        let Some(data) = &self.data else {
+            Paragraph::new("Loading\u{2026}")
+                .style(Style::default().fg(CLAURST_MUTED).bg(CLAURST_PANEL_BG))
+                .render(content_area, buf);
+            return;
+        };
+
+        match self.tab {
+            StatsTab::Overview    => render_overview(data, self, content_area, buf),
+            StatsTab::DailyTokens => render_daily_tokens(data, self.range_days, content_area, buf),
+            StatsTab::CostHeatmap => render_cost_heatmap(data, content_area, buf),
+            StatsTab::Models      => render_models(self, content_area, buf),
+        }
+        Paragraph::new(Line::from(vec![Span::styled(
+            " tab/←/→ switch tabs  ·  r cycle range  ·  ↑↓ scroll",
+            Style::default().fg(CLAURST_MUTED).add_modifier(Modifier::ITALIC),
+        )]))
+        .render(layout.footer_area, buf);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,50 +436,8 @@ fn date_to_days_since_epoch(date: &str) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// Rendering helpers (used by `DialogBehavior::render_content` above)
 // ---------------------------------------------------------------------------
-
-/// Render the stats dialog overlay.
-pub fn render_stats_dialog(state: &StatsDialogState, area: Rect, buf: &mut Buffer) {
-    if !state.visible { return; }
-
-    let layout = begin_modal_buf(buf, area, 92, 30, 2, 1);
-    render_modal_title_buf(buf, layout.header_area, "Cost & stats", "esc");
-
-    let tab_line = Line::from(vec![
-        tab_span("Overview",      state.tab == StatsTab::Overview),
-        Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
-        tab_span("Daily Tokens",  state.tab == StatsTab::DailyTokens),
-        Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
-        tab_span("Cost Heatmap",  state.tab == StatsTab::CostHeatmap),
-        Span::styled("  ·  ", Style::default().fg(CLAURST_MUTED)),
-        tab_span("Models",        state.tab == StatsTab::Models),
-    ]);
-    if let Some(tab_area) = modal_header_line_area(layout.header_area, 1) {
-        Paragraph::new(tab_line).render(tab_area, buf);
-    }
-
-    let content_area = layout.body_area;
-
-    let Some(data) = &state.data else {
-        Paragraph::new("Loading\u{2026}")
-            .style(Style::default().fg(CLAURST_MUTED).bg(CLAURST_PANEL_BG))
-            .render(content_area, buf);
-        return;
-    };
-
-    match state.tab {
-        StatsTab::Overview    => render_overview(data, state, content_area, buf),
-        StatsTab::DailyTokens => render_daily_tokens(data, state.range_days, content_area, buf),
-        StatsTab::CostHeatmap => render_cost_heatmap(data, content_area, buf),
-        StatsTab::Models      => render_models(state, content_area, buf),
-    }
-    Paragraph::new(Line::from(vec![Span::styled(
-        " tab/←/→ switch tabs  ·  r cycle range  ·  ↑↓ scroll",
-        Style::default().fg(CLAURST_MUTED).add_modifier(Modifier::ITALIC),
-    )]))
-    .render(layout.footer_area, buf);
-}
 
 fn tab_span(label: &str, active: bool) -> Span<'static> {
     if active {

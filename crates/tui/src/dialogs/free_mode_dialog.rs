@@ -37,7 +37,7 @@ use ratatui::Frame;
 
 use claurst_api::{FreeUpstream, FREE_CATALOG};
 
-use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::input::normalize_char_with_shift;
 use crate::keyboard_enhancement_active;
 use crate::overlays::{CLAURST_PANEL_BG, ModalLayout};

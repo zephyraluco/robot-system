@@ -47,7 +47,7 @@ impl App {
 
     pub fn refresh_prompt_input(&mut self) {
         self.prompt_input.mode = self.prompt_mode();
-        if self.file_injection_dialog.visible {
+        if self.file_injection_dialog.is_visible() {
             // Don't update suggestions while the injection dialog is open.
             self.sync_legacy_prompt_fields();
             return;

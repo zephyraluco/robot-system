@@ -10,12 +10,17 @@
 //     so we treat it the same as "Not now" but could be extended).
 //   - "Don't ask again" sets the dismissed flag permanently.
 //   - Esc / "Not now" closes without permanently dismissing.
+// Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
-use ratatui::buffer::Buffer;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
+use ratatui::Frame;
+
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::ModalLayout;
 
 // ---------------------------------------------------------------------------
 // Platform guard
@@ -53,10 +58,10 @@ impl DesktopUpsellSelection {
 }
 
 /// Desktop upsell startup dialog state.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DesktopUpsellStartupState {
-    /// Whether the dialog is currently visible.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Which option is highlighted.
     pub selection: DesktopUpsellSelection,
     /// How many times the dialog has been shown this session.
@@ -67,7 +72,12 @@ pub struct DesktopUpsellStartupState {
 
 impl DesktopUpsellStartupState {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            core: DialogCore::new("Claurst Code Desktop", 58, 12),
+            selection: DesktopUpsellSelection::default(),
+            seen_count: 0,
+            dismissed: false,
+        }
     }
 
     /// Show the dialog if eligible: supported platform, not dismissed, seen < 3.
@@ -79,7 +89,7 @@ impl DesktopUpsellStartupState {
             return;
         }
         self.seen_count += 1;
-        self.visible = true;
+        self.core.open();
     }
 
     /// Move the cursor up.
@@ -105,11 +115,11 @@ impl DesktopUpsellStartupState {
     pub fn confirm(&mut self) -> bool {
         match self.selection {
             DesktopUpsellSelection::Try | DesktopUpsellSelection::NotNow => {
-                self.visible = false;
+                self.core.close();
                 false
             }
             DesktopUpsellSelection::Never => {
-                self.visible = false;
+                self.core.close();
                 self.dismissed = true;
                 true
             }
@@ -118,92 +128,91 @@ impl DesktopUpsellStartupState {
 
     /// Close without permanent dismiss (Esc key).
     pub fn dismiss_temporarily(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Height the dialog occupies (0 if not visible).
     pub fn height(&self) -> u16 {
-        if self.visible { 12 } else { 0 }
+        if self.core.is_visible() { 12 } else { 0 }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/// Render the desktop upsell startup dialog as a centered modal.
-pub fn render_desktop_upsell_startup(
-    state: &DesktopUpsellStartupState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
-    if !state.visible || area.height < 8 || area.width < 40 {
-        return;
+impl DialogBehavior for DesktopUpsellStartupState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    let dialog_w = 58u16.min(area.width.saturating_sub(4));
-    let dialog_h = 12u16.min(area.height.saturating_sub(2));
-    let x = area.x + (area.width.saturating_sub(dialog_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(dialog_h)) / 2;
-    let dialog_area = Rect { x, y, width: dialog_w, height: dialog_h };
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    Clear.render(dialog_area, buf);
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Up | KeyCode::BackTab => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => {
+                self.confirm();
+                DialogOutcome::Confirmed
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
 
-    Block::default()
-        .title(Span::styled(
-            " Claurst Code Desktop ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .render(dialog_area, buf);
-
-    let inner = Rect {
-        x: dialog_area.x + 2,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(4),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let mut lines: Vec<Line> = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Same Claurst features with visual diffs, live app",
-            Style::default().fg(Color::White),
-        )]),
-        Line::from(vec![Span::styled(
-            "preview, parallel sessions, and more.",
-            Style::default().fg(Color::White),
-        )]),
-        Line::from(""),
-    ];
-
-    for option in &DesktopUpsellSelection::ALL {
-        let selected = *option == state.selection;
-        let prefix = if selected { "> " } else { "  " };
-        let label_style = if selected {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let inner = Rect {
+            x: layout.body_area.x,
+            y: layout.body_area.y,
+            width: layout.body_area.width,
+            height: layout.body_area.height,
         };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, label_style),
-            Span::styled(option.label(), label_style),
-        ]));
+
+        let mut lines: Vec<Line> = vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Same Claurst features with visual diffs, live app",
+                Style::default().fg(Color::White),
+            )]),
+            Line::from(vec![Span::styled(
+                "preview, parallel sessions, and more.",
+                Style::default().fg(Color::White),
+            )]),
+            Line::from(""),
+        ];
+
+        for option in &DesktopUpsellSelection::ALL {
+            let selected = *option == self.selection;
+            let prefix = if selected { "> " } else { "  " };
+            let label_style = if selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, label_style),
+                Span::styled(option.label(), label_style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "↑↓ navigate  Enter confirm  Esc close",
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        Paragraph::new(lines).render(inner, frame.buffer_mut());
     }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "↑↓ navigate  Enter confirm  Esc close",
-        Style::default().fg(Color::DarkGray),
-    )]));
-
-    Paragraph::new(lines).render(inner, buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,9 +232,9 @@ mod tests {
         state.seen_count = 0;
         // Force show by simulating the body of show_if_eligible without platform check.
         state.seen_count += 1;
-        state.visible = true;
+        state.core.open();
         assert_eq!(state.seen_count, 1);
-        assert!(state.visible);
+        assert!(state.is_visible());
     }
 
     #[test]
@@ -242,25 +251,25 @@ mod tests {
     #[test]
     fn desktop_upsell_never_dismisses() {
         let mut state = DesktopUpsellStartupState::new();
-        state.visible = true;
+        state.core.open();
         state.selection = DesktopUpsellSelection::Never;
         let permanent = state.confirm();
         assert!(permanent);
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert!(state.dismissed);
         // Attempting to show again should not succeed.
         state.show_if_eligible();
-        assert!(!state.visible);
+        assert!(!state.is_visible());
     }
 
     #[test]
     fn desktop_upsell_not_now_keeps_eligible() {
         let mut state = DesktopUpsellStartupState::new();
-        state.visible = true;
+        state.core.open();
         state.selection = DesktopUpsellSelection::NotNow;
         let permanent = state.confirm();
         assert!(!permanent);
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert!(!state.dismissed);
     }
 
@@ -281,31 +290,37 @@ mod tests {
     #[test]
     fn desktop_upsell_esc_does_not_dismiss_permanently() {
         let mut state = DesktopUpsellStartupState::new();
-        state.visible = true;
+        state.core.open();
         state.seen_count = 1;
         state.dismiss_temporarily();
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert!(!state.dismissed);
     }
 
     #[test]
     fn desktop_upsell_render_smoke() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut state = DesktopUpsellStartupState::new();
-        state.visible = true;
+        state.core.open();
         let area = Rect { x: 0, y: 0, width: 80, height: 24 };
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        render_desktop_upsell_startup(&state, area, &mut buf);
-        let rendered = buf.content.iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| {
+            state.render(frame, area);
+        }).unwrap();
+        let rendered = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
         assert!(rendered.contains("Claurst Code Desktop") || rendered.contains("visual diffs"));
     }
 
     #[test]
     fn desktop_upsell_not_rendered_when_invisible() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let state = DesktopUpsellStartupState::new();
         let area = Rect { x: 0, y: 0, width: 80, height: 24 };
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        render_desktop_upsell_startup(&state, area, &mut buf);
-        let rendered = buf.content.iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| {
+            state.render(frame, area);
+        }).unwrap();
+        let rendered = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
         assert!(!rendered.contains("visual diffs"));
     }
 }

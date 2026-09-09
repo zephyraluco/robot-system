@@ -4,7 +4,7 @@
 // selection dialogs (models, commands, sessions).
 //
 // `DialogSelectState` is built on the generic dialog base (`DialogCore` +
-// `DialogBehavior` in `crate::dialog`): it embeds a `DialogCore` for
+// `DialogBehavior` in `crate::dialogs::dialog`): it embeds a `DialogCore` for
 // visibility/geometry and routes keyboard + mouse events through the
 // `DialogBehavior` dispatch pipeline (`handle_key` / `handle_mouse`),
 // while keeping its legacy direct-manipulation methods (move_up, filter_push,
@@ -21,7 +21,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::cell::{Cell, RefCell};
 
-use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::{modal_search_line, ModalLayout, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------

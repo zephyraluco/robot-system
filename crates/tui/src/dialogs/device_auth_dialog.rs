@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::{CLAURST_PANEL_BG, ModalLayout};
 
 // ---------------------------------------------------------------------------

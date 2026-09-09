@@ -1,6 +1,6 @@
 //! T5-3: Diff viewer tests.
 
-use claurst_tui::diff_viewer::{parse_unified_diff, DiffLineKind};
+use claurst_tui::dialogs::diff_viewer::{parse_unified_diff, DiffLineKind};
 
 // ---------------------------------------------------------------------------
 // parse_unified_diff

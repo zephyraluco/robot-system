@@ -358,17 +358,19 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 ## 6. 对话框 / 覆盖层（按功能分组）
 
-- **权限/确认**：`dialogs.rs`(1728，权限/确认对话框 + MCP 审批)、`bypass_permissions_dialog.rs`（--dangerously-skip-permissions 启动确认）
-- **提问/表单**：`ask_user_dialog.rs`（AskUserQuestion 弹窗）、`elicitation_dialog.rs`(797，MCP elicitation 表单)
-- **模型/effort**：`model_picker.rs`(1585)、`effort_picker.rs`(1004)
-- **会话**：`session_browser.rs`(605)、`session_branching.rs`（Ctrl+B 分支）、`export_dialog.rs`、`memory_file_selector.rs`
-- **代码视图**：`diff_viewer.rs`(1305，两栏 diff)、`paste_viewer.rs`
-- **系统状态**：`stats_dialog.rs`(914)、`context_viz.rs`、`mcp_view.rs`(676)、`tasks_overlay.rs`、`agents_view.rs`(959)、`hooks_config_menu.rs`
-- **设置/引导**：`settings_screen.rs`(892)、`onboarding_dialog.rs`、`invalid_config_dialog.rs`、`import_config_dialog.rs`
-- **认证/账户**：`device_auth_dialog.rs`（设备码 OAuth）、`key_input_dialog.rs`、`custom_provider_dialog.rs`、`free_mode_dialog.rs`
-- **通用控件**：`dialog_select.rs`(621，可复用模糊搜索选择列表)
-- **通知/横幅**：`notifications.rs`、`feedback_survey.rs`、`overage_upsell.rs`、`desktop_upsell_startup.rs`、`memory_update_notification.rs`
-- **输入辅助**：`file_injection.rs`（@file 引用解析）、`file_injection_dialog.rs`、`message_copy.rs`(480，多格式复制)
+> 所有对话框组件位于 `dialogs/` 目录，统一基于 `dialogs/dialog.rs` 的 `DialogCore` + `DialogBehavior` 基座；`dialogs/mod.rs` 声明全部子模块并 re-export 权限对话框 API。
+
+- **权限/确认**：`dialogs/permission.rs`(1728，权限/确认对话框 + MCP 审批)、`dialogs/bypass_permissions_dialog.rs`（--dangerously-skip-permissions 启动确认）
+- **提问/表单**：`dialogs/ask_user_dialog.rs`（AskUserQuestion 弹窗）、`dialogs/elicitation_dialog.rs`(797，MCP elicitation 表单)
+- **模型/effort**：`dialogs/model_picker.rs`(1585)、`effort_picker.rs`(1004)
+- **会话**：`dialogs/session_browser.rs`(605)、`dialogs/session_branching.rs`（Ctrl+B 分支）、`dialogs/export_dialog.rs`、`dialogs/memory_file_selector.rs`
+- **代码视图**：`dialogs/diff_viewer.rs`(1305，两栏 diff)、`paste_viewer.rs`
+- **系统状态**：`dialogs/stats_dialog.rs`(914)、`context_viz.rs`、`mcp_view.rs`(676)、`tasks_overlay.rs`、`agents_view.rs`(959)、`hooks_config_menu.rs`
+- **设置/引导**：`settings_screen.rs`(892)、`dialogs/onboarding_dialog.rs`、`dialogs/invalid_config_dialog.rs`、`dialogs/import_config_dialog.rs`
+- **认证/账户**：`dialogs/device_auth_dialog.rs`（设备码 OAuth）、`dialogs/key_input_dialog.rs`、`dialogs/custom_provider_dialog.rs`、`dialogs/free_mode_dialog.rs`
+- **通用控件**：`dialogs/dialog_select.rs`(621，可复用模糊搜索选择列表)、`dialogs/dialog.rs`（基座）
+- **通知/横幅**：`notifications.rs`、`dialogs/feedback_survey.rs`、`overage_upsell.rs`、`dialogs/desktop_upsell_startup.rs`、`memory_update_notification.rs`
+- **输入辅助**：`file_injection.rs`（@file 引用解析）、`dialogs/file_injection_dialog.rs`、`message_copy.rs`(480，多格式复制)
 - **连接**：`bridge_state.rs`、`plugin_views.rs`
 - **overlays.rs**(2246)：帮助 overlay、历史搜索、消息选择器、rewind 流程、全局搜索
 - `input.rs`：斜杠命令解析（`is_slash_command`/`parse_slash_command`）

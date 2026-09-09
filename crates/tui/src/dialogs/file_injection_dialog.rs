@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::file_injection::AtFileIssue;
 use crate::image_paste::PastedImage;
+use crate::overlays::ModalLayout;
 
 /// Outcome of the file injection dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +24,8 @@ pub enum FileInjectionOutcome {
 /// Shown when oversized or binary files are detected in @refs.
 #[derive(Debug, Clone)]
 pub struct FileInjectionDialogState {
-    /// Whether the dialog is currently visible.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Stashed input text (taken from prompt, must be re-set or sent).
     pub pending_input: Option<String>,
     /// Stashed image attachments at submit time.
@@ -43,7 +45,11 @@ pub struct FileInjectionDialogState {
 impl FileInjectionDialogState {
     pub fn new() -> Self {
         Self {
-            visible: false,
+            // No title bar / footer — the original dialog drew its own yellow
+            // bordered box, so the body gets the full inner height.
+            core: DialogCore::new("File Injection Warning", 72, 10)
+                .header_height(0)
+                .footer_height(0),
             pending_input: None,
             pending_imgs: Vec::new(),
             oversized: Vec::new(),
@@ -63,7 +69,6 @@ impl FileInjectionDialogState {
         limit_kb: usize,
         cwd: Option<PathBuf>,
     ) {
-        self.visible = true;
         self.pending_input = Some(input);
         self.pending_imgs = imgs;
         self.oversized = oversized;
@@ -72,6 +77,10 @@ impl FileInjectionDialogState {
         // Directory-only: default to Abort (Allow does nothing useful for dirs)
         self.selected = if self.is_directory_only() { 1 } else { 0 };
         self.outcome = None;
+        // Height: 1 blank + 1 label + 1 blank + N files + 1 blank + 1 hint + 1 blank
+        let content_rows = 5 + self.oversized.len();
+        self.core.set_size(72, (content_rows as u16 + 2).max(8));
+        self.core.open();
     }
 
     /// Check if all oversized items are directories.
@@ -100,11 +109,15 @@ impl FileInjectionDialogState {
 
     /// Dismiss the dialog (Abort path).
     pub fn dismiss(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.pending_input = None;
         self.pending_imgs.clear();
         self.oversized.clear();
         self.outcome = None;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Take the outcome (if set) along with stashed input and images.
@@ -113,7 +126,7 @@ impl FileInjectionDialogState {
         let outcome = self.outcome.take()?;
         let input = self.pending_input.take()?;
         let imgs = std::mem::take(&mut self.pending_imgs);
-        self.visible = false;
+        self.core.close();
         Some((outcome, input, imgs))
     }
 
@@ -140,117 +153,106 @@ impl Default for FileInjectionDialogState {
     }
 }
 
-/// Render the file injection warning dialog over the frame.
-pub fn render_file_injection_dialog(
-    frame: &mut Frame,
-    state: &FileInjectionDialogState,
-    area: Rect,
-) {
-    if !state.visible {
-        return;
+impl DialogBehavior for FileInjectionDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    let is_directory = state.is_directory_only();
-    let n_files = state.oversized.len();
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    // Height: 1 blank + 1 label + 1 blank + N files + 1 blank + 1 hint + 1 blank
-    let content_rows = 5 + n_files;
-    let dialog_height = (content_rows as u16 + 2).min(area.height.saturating_sub(4));
-    let dialog_width = 72u16.min(area.width.saturating_sub(4));
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height).saturating_sub(3)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Enter => {
+                if self.is_directory_only() {
+                    // Directories can't be injected; Enter = abort, restore input.
+                    self.core.close();
+                    DialogOutcome::Cancelled
+                } else {
+                    // Enter = inject (Allow).
+                    self.selected = 0;
+                    self.confirm();
+                    self.core.close();
+                    DialogOutcome::Confirmed
+                }
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
 
-    let title = if is_directory {
-        " ⚠  Directory Injection Warning "
-    } else {
-        " ⚠  File Injection Warning "
-    };
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let is_directory = self.is_directory_only();
+        let n_files = self.oversized.len();
 
-    let bg = Color::Rgb(35, 35, 35);
+        let mut lines: Vec<Line<'static>> = Vec::new();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(vec![Span::styled(
-            title,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )]))
-        .border_style(Style::default().fg(Color::Yellow))
-        .style(Style::default().bg(bg))
-        .padding(Padding { left: 2, right: 2, top: 0, bottom: 0 });
+        lines.push(Line::from(""));
 
-    let inner = block.inner(dialog_area);
-    frame.render_widget(Clear, dialog_area);
-    frame.render_widget(block, dialog_area);
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    lines.push(Line::from(""));
-
-    // Header: label + limit info
-    let label_word = if is_directory {
-        if n_files == 1 { "directory" } else { "directories" }
-    } else if n_files == 1 { "file" } else { "files" }
-    ;
-    let header = if is_directory {
-        format!("The following {} cannot be auto-injected:", label_word)
-    } else if state.limit_kb > 0 {
-        format!("The following {} is over the file size limit ({} KB):", label_word, state.limit_kb)
-    } else {
-        format!("The following {} cannot be auto-injected:", label_word)
-    };
-
-    lines.push(Line::from(vec![Span::styled(
-        header,
-        Style::default().fg(Color::White),
-    )]));
-    lines.push(Line::from(""));
-
-    for (path, _size_kb, issue) in &state.oversized {
-        let display = state.display_path(path).to_owned();
-        let text = match issue {
-            AtFileIssue::Binary => format!("• {} (binary)", display),
-            AtFileIssue::TooLarge(_) => format!("• {} (too large)", display),
-            AtFileIssue::Unreadable(msg) => format!("• {} (unreadable: {})", display, msg),
-            AtFileIssue::IsDirectory => format!("• {}", display),
+        // Header: label + limit info
+        let label_word = if is_directory {
+            if n_files == 1 { "directory" } else { "directories" }
+        } else if n_files == 1 { "file" } else { "files" };
+        let header = if is_directory {
+            format!("The following {} cannot be auto-injected:", label_word)
+        } else if self.limit_kb > 0 {
+            format!("The following {} is over the file size limit ({} KB):", label_word, self.limit_kb)
+        } else {
+            format!("The following {} cannot be auto-injected:", label_word)
         };
 
         lines.push(Line::from(vec![Span::styled(
-            text,
-            Style::default().fg(Color::DarkGray),
+            header,
+            Style::default().fg(Color::White),
         )]));
-    }
+        lines.push(Line::from(""));
 
-    lines.push(Line::from(""));
+        for (path, _size_kb, issue) in &self.oversized {
+            let display = self.display_path(path).to_owned();
+            let text = match issue {
+                AtFileIssue::Binary => format!("• {} (binary)", display),
+                AtFileIssue::TooLarge(_) => format!("• {} (too large)", display),
+                AtFileIssue::Unreadable(msg) => format!("• {} (unreadable: {})", display, msg),
+                AtFileIssue::IsDirectory => format!("• {}", display),
+            };
 
-    if is_directory {
-        lines.push(Line::from(vec![Span::styled(
-            "  Enter or Esc to dismiss",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-        )]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Enter to inject anyway",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  ·  Esc to abort",
+            lines.push(Line::from(vec![Span::styled(
+                text,
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
+
+        lines.push(Line::from(""));
+
+        if is_directory {
+            lines.push(Line::from(vec![Span::styled(
+                "  Enter or Esc to dismiss",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+            )]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Enter to inject anyway",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  ·  Esc to abort",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(layout.body_area, frame.buffer_mut());
     }
-
-    lines.push(Line::from(""));
-
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .render(inner, frame.buffer_mut());
 }
 
+// ---------------------------------------------------------------------------
+// (Rendering is provided by `DialogBehavior::render` + `render_content` above.)
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -261,7 +263,7 @@ mod tests {
     #[test]
     fn file_injection_dialog_defaults_hidden() {
         let state = FileInjectionDialogState::new();
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert_eq!(state.selected, 0);
     }
 
@@ -269,7 +271,7 @@ mod tests {
     fn file_injection_dialog_show_sets_visible() {
         let mut state = FileInjectionDialogState::new();
         state.show("input".to_string(), vec![], vec![("file.txt".to_string(), 100, AtFileIssue::TooLarge(100))], 100, None);
-        assert!(state.visible);
+        assert!(state.is_visible());
         assert_eq!(state.selected, 0);
         assert!(!state.oversized.is_empty());
     }
@@ -306,12 +308,13 @@ mod tests {
         let (outcome, input, _) = state.take_outcome().unwrap();
         assert_eq!(outcome, FileInjectionOutcome::InjectAll);
         assert_eq!(input, "test input");
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert_eq!(state.outcome, None);
     }
 
     #[test]
     fn file_injection_dialog_renders_without_panic() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut state = FileInjectionDialogState::new();
         state.show(
@@ -323,8 +326,7 @@ mod tests {
         );
         terminal
             .draw(|frame| {
-                let area = frame.area();
-                render_file_injection_dialog(frame, &state, area);
+                state.render(frame, frame.area());
             })
             .unwrap();
         let content: String = terminal
@@ -335,17 +337,21 @@ mod tests {
             .iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
             .collect();
-        assert!(content.contains("Warning") || content.contains("File"));
+        assert!(
+            content.contains("inject") || content.contains("file size limit"),
+            "expected injection warning body text, got: {content:?}"
+        );
     }
 
     #[test]
     fn file_injection_dialog_hidden_renders_nothing() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let state = FileInjectionDialogState::new(); // visible = false
         let before = terminal.backend().buffer().clone();
         terminal
             .draw(|frame| {
-                render_file_injection_dialog(frame, &state, frame.area());
+                state.render(frame, frame.area());
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer().content(), before.content());
@@ -366,9 +372,10 @@ mod tests {
     }
 
     fn render_to_string(state: &FileInjectionDialogState) -> String {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| {
-            render_file_injection_dialog(frame, state, frame.area());
+            state.render(frame, frame.area());
         }).unwrap();
         terminal.backend().buffer().clone().content().iter().map(|c| c.symbol().chars().next().unwrap_or(' ')).collect()
     }

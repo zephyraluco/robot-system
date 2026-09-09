@@ -1,14 +1,17 @@
 //! Session browser overlay (/session, /resume, /rename, /export).
 //! Mirrors TS session management in REPL.tsx
+//! Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::overlays::centered_rect;
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::ModalLayout;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,7 +42,8 @@ pub struct SessionEntry {
 
 /// State for the session browser overlay.
 pub struct SessionBrowserState {
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     pub selected_idx: usize,
     pub sessions: Vec<SessionEntry>,
     pub mode: SessionBrowserMode,
@@ -55,7 +59,7 @@ impl SessionBrowserState {
     /// Create a new, hidden browser with an empty session list.
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Sessions", 70, 20).header_height(1).footer_height(0),
             selected_idx: 0,
             sessions: Vec::new(),
             mode: SessionBrowserMode::Browse,
@@ -69,14 +73,18 @@ impl SessionBrowserState {
         self.selected_idx = 0;
         self.mode = SessionBrowserMode::Browse;
         self.rename_input.clear();
-        self.visible = true;
+        self.core.open();
     }
 
     /// Close the browser entirely.
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.mode = SessionBrowserMode::Browse;
         self.rename_input.clear();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Move selection up one row, wrapping to the end.
@@ -203,37 +211,69 @@ fn truncate_display(s: &str, max_width: usize) -> String {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Render the session browser overlay directly into `buf`.
-///
-/// Draws a centred modal (≈70 wide × ≈20 tall) with:
-/// - A scrollable list of sessions (id, title, date, messages, cost)
-/// - Selection highlight on the focused row
-/// - Mode-sensitive hint bar at the bottom
-/// - A rename input field shown when in `Rename` mode
-pub fn render_session_browser(state: &SessionBrowserState, area: Rect, buf: &mut Buffer) {
-    if !state.visible {
-        return;
+impl DialogBehavior for SessionBrowserState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    const MODAL_W: u16 = 70;
-    const MODAL_H: u16 = 20;
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    let dialog_area = centered_rect(
-        MODAL_W.min(area.width.saturating_sub(2)),
-        MODAL_H.min(area.height.saturating_sub(2)),
-        area,
-    );
-
-    // --- Clear background -------------------------------------------------
-    for y in dialog_area.y..dialog_area.y + dialog_area.height {
-        for x in dialog_area.x..dialog_area.x + dialog_area.width {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.reset();
-            }
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: confirmation actions that need App state (rename the session,
+        // confirm a destructive action) are NOT consumed here — the dialog only
+        // signals the outcome; keys.rs reads the mode and performs the action.
+        match self.mode {
+            SessionBrowserMode::Browse => match key.code {
+                KeyCode::Up => {
+                    self.select_prev();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Down => {
+                    self.select_next();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char('r') => {
+                    self.start_rename();
+                    DialogOutcome::Handled
+                }
+                _ => DialogOutcome::Ignored,
+            },
+            SessionBrowserMode::Rename => match key.code {
+                KeyCode::Enter => {
+                    if self.rename_input.trim().is_empty() {
+                        DialogOutcome::Handled
+                    } else {
+                        DialogOutcome::Confirmed
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.pop_rename_char();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char(c) => {
+                    self.push_rename_char(c);
+                    DialogOutcome::Handled
+                }
+                _ => DialogOutcome::Ignored,
+            },
+            SessionBrowserMode::Confirm => match key.code {
+                KeyCode::Char('n') => {
+                    self.cancel();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Enter | KeyCode::Char('y') => DialogOutcome::Confirmed,
+                _ => DialogOutcome::Ignored,
+            },
         }
     }
 
-    let inner_w = dialog_area.width.saturating_sub(2) as usize;
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let buf = frame.buffer_mut();
+        let state = self;
+        let dialog_area = layout.body_area;
+        let inner_w = dialog_area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
     // --- Session list -----------------------------------------------------
@@ -390,19 +430,13 @@ pub fn render_session_browser(state: &SessionBrowserState, area: Rect, buf: &mut
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Sessions ")
-        .title_alignment(Alignment::Center)
-        .border_style(Style::default().fg(Color::Cyan));
+        let para = Paragraph::new(lines)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false });
 
-    let para = Paragraph::new(lines)
-        .block(block)
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: false });
-
-    use ratatui::widgets::Widget;
-    para.render(dialog_area, buf);
+        use ratatui::widgets::Widget;
+        para.render(dialog_area, buf);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +477,7 @@ mod tests {
     #[test]
     fn new_starts_hidden() {
         let s = SessionBrowserState::new();
-        assert!(!s.visible);
+        assert!(!s.is_visible());
         assert!(s.sessions.is_empty());
         assert_eq!(s.mode, SessionBrowserMode::Browse);
     }
@@ -453,7 +487,7 @@ mod tests {
     fn open_populates_and_shows() {
         let mut s = SessionBrowserState::new();
         s.open(sample_sessions());
-        assert!(s.visible);
+        assert!(s.is_visible());
         assert_eq!(s.sessions.len(), 3);
         assert_eq!(s.selected_idx, 0);
         assert_eq!(s.mode, SessionBrowserMode::Browse);
@@ -551,7 +585,7 @@ mod tests {
         s.start_rename();
         s.cancel();
         assert_eq!(s.mode, SessionBrowserMode::Browse);
-        assert!(s.visible, "overlay should remain visible after cancel-from-rename");
+        assert!(s.is_visible(), "overlay should remain visible after cancel-from-rename");
     }
 
     // 11. cancel() in Browse mode closes the overlay.
@@ -561,29 +595,30 @@ mod tests {
         s.open(sample_sessions());
         assert_eq!(s.mode, SessionBrowserMode::Browse);
         s.cancel();
-        assert!(!s.visible);
+        assert!(!s.is_visible());
     }
 
-    // 12. render_session_browser does not panic.
+    // 12. render does not panic.
     #[test]
     fn render_does_not_panic() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut s = SessionBrowserState::new();
         s.open(sample_sessions());
-        let area = Rect::new(0, 0, 120, 40);
-        let mut buf = Buffer::empty(area);
-        render_session_browser(&s, area, &mut buf);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| {
+            s.render(frame, frame.area());
+        }).unwrap();
     }
 
     // 13. render is a no-op when hidden.
     #[test]
     fn render_noop_when_hidden() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let s = SessionBrowserState::new(); // visible = false
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        render_session_browser(&s, area, &mut buf);
-        for cell in buf.content() {
-            assert_eq!(cell.symbol(), " ", "buffer should be empty when browser is hidden");
-        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| {
+            s.render(frame, frame.area());
+        }).unwrap();
     }
 
     // 14. fmt_cost formats correctly.

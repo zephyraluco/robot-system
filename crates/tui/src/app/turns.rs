@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::diff_viewer::build_turn_diff;
+use crate::dialogs::diff_viewer::build_turn_diff;
 use claurst_core::file_history::FileHistory;
 use claurst_core::types::{ContentBlock, Message, Role};
 use super::App;

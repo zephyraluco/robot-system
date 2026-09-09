@@ -1,13 +1,17 @@
 //! Session branching overlay — allows creating and switching between branches of a conversation.
 //! Each branch is an independent copy of the conversation from a chosen message point forward.
+//! Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Widget, Wrap};
+use ratatui::widgets::{List, ListItem, Paragraph, Widget, Wrap};
+use ratatui::Frame;
 
-use crate::overlays::centered_rect;
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::ModalLayout;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,8 +47,8 @@ pub enum BranchBrowserMode {
 
 /// State for the session branching UI overlay.
 pub struct SessionBranchingState {
-    /// Whether the overlay is visible.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Currently selected branch index.
     pub selected_idx: usize,
     /// List of available branches.
@@ -71,7 +75,9 @@ impl SessionBranchingState {
     /// Create a new, hidden branching state.
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Session Branches", 80, 70)
+                .header_height(1)
+                .footer_height(0),
             selected_idx: 0,
             branches: Vec::new(),
             mode: BranchBrowserMode::Browse,
@@ -88,14 +94,18 @@ impl SessionBranchingState {
         self.mode = BranchBrowserMode::Browse;
         self.create_input.clear();
         self.branch_at_message = branch_at;
-        self.visible = true;
+        self.core.open();
     }
 
     /// Close the overlay.
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.mode = BranchBrowserMode::Browse;
         self.create_input.clear();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Move selection up one row, wrapping to the end.
@@ -205,47 +215,89 @@ impl SessionBranchingState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/// Render the session branching overlay.
-pub fn render_session_branching(
-    state: &SessionBranchingState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
-    if !state.visible {
-        return;
+impl DialogBehavior for SessionBranchingState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    let popup_area = centered_rect(80, 70, area);
-    let title = "Session Branches";
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    let border_color = match state.mode {
-        BranchBrowserMode::Browse => Color::Cyan,
-        BranchBrowserMode::CreateNew => Color::Yellow,
-        BranchBrowserMode::ConfirmDelete => Color::Red,
-    };
-
-    let block = Block::default()
-        .title(title)
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-
-    let inner = block.inner(popup_area);
-    block.render(popup_area, buf);
-
-    match state.mode {
-        BranchBrowserMode::Browse => {
-            render_branch_list(state, inner, buf);
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: confirmation actions that need App state (switch / create /
+        // delete branch) are NOT consumed here — the dialog only signals the
+        // outcome; keys.rs reads the mode and performs the action.
+        match self.mode {
+            BranchBrowserMode::Browse => match key.code {
+                KeyCode::Up => {
+                    self.select_prev();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Down => {
+                    self.select_next();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char('n') => {
+                    self.start_create_new();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char('d') => {
+                    self.start_delete_confirm();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Enter => {
+                    if self.selected_branch().is_some() {
+                        DialogOutcome::Confirmed
+                    } else {
+                        DialogOutcome::Handled
+                    }
+                }
+                _ => DialogOutcome::Ignored,
+            },
+            BranchBrowserMode::CreateNew => match key.code {
+                KeyCode::Enter => {
+                    if self.create_input.trim().is_empty() {
+                        DialogOutcome::Handled
+                    } else {
+                        DialogOutcome::Confirmed
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.pop_create_char();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char(c) => {
+                    self.push_create_char(c);
+                    DialogOutcome::Handled
+                }
+                _ => DialogOutcome::Ignored,
+            },
+            BranchBrowserMode::ConfirmDelete => match key.code {
+                KeyCode::Char('n') => {
+                    self.cancel();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Enter | KeyCode::Char('y') => DialogOutcome::Confirmed,
+                _ => DialogOutcome::Ignored,
+            },
         }
-        BranchBrowserMode::CreateNew => {
-            render_create_branch(state, inner, buf);
-        }
-        BranchBrowserMode::ConfirmDelete => {
-            render_confirm_delete(state, inner, buf);
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let buf = frame.buffer_mut();
+        let inner = layout.body_area;
+
+        match self.mode {
+            BranchBrowserMode::Browse => {
+                render_branch_list(self, inner, buf);
+            }
+            BranchBrowserMode::CreateNew => {
+                render_create_branch(self, inner, buf);
+            }
+            BranchBrowserMode::ConfirmDelete => {
+                render_confirm_delete(self, inner, buf);
+            }
         }
     }
 }

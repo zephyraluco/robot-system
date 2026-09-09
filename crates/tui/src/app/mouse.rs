@@ -1,11 +1,20 @@
 //! Pointer input: mouse events, selection, context menu, paste viewer.
 
-use crate::dialog::DialogBehavior as _;
+use crate::dialogs::dialog::DialogBehavior;
 use crate::notifications::NotificationKind;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use tracing::debug;
 use super::App;
 use super::types::{ContextMenuKind, ContextMenuItem, ContextMenuState, FocusTarget};
+
+/// What a modal dialog's mouse dispatch decided the caller should do.
+enum DialogMouseAction {
+    /// Event consumed; the dialog stays open.
+    Consumed,
+    /// Left click landed outside the dialog — the caller should dismiss all
+    /// secondary views and restore input focus.
+    Dismiss,
+}
 
 impl App {
     /// Detect if a click is a double-click based on timing and position.
@@ -377,79 +386,20 @@ impl App {
             return;
         }
 
-        // ---- Connect-a-provider dialog ----------------------------------
-        // Routes through the generic DialogBehavior pipeline (crate::dialog):
-        // clicks/scrolls inside are handled by the dialog itself; a left click
-        // outside dismisses all secondary views and restores input focus,
-        // matching the pre-migration behavior.
-        if self.connect_dialog.is_visible() {
-            if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left))
-                && !self
-                    .connect_dialog
-                    .contains(mouse_event.column, mouse_event.row)
-            {
-                self.close_secondary_views();
-                self.focus = FocusTarget::Input;
-                return;
-            }
-            let _ = self.connect_dialog.handle_mouse(mouse_event);
-            return; // modal: swallow every mouse event while open
+        // ---- Modal dialog mouse routing ----------------------------------
+        // Every DialogCore-based dialog routes through the generic
+        // DialogBehavior pipeline (crate::dialogs::dialog): clicks/scrolls
+        // inside are handled by the dialog itself; a left click outside
+        // dismisses all secondary views (and the dialog) and restores input
+        // focus. Modal dialogs swallow every mouse event while open.
+        if self.route_modal_dialog_mouse(mouse_event) {
+            return;
         }
 
-        // ---- Dialog interaction: dismiss on click-outside, scroll/click inside ----
-        // Key-input and device-auth stay outside this gate so their visible text
-        // can still be selected and copied with the mouse.
-        let any_dialog = self.import_config_picker.is_visible()
-            || self.import_config_dialog.visible
-            || self.command_palette.is_visible()
-            || self.model_picker.is_visible()
-            || self.export_dialog.visible
-            || self.settings_screen.visible
-            || self.stats_dialog.visible
-            || self.context_viz.visible
-            || self.session_browser.visible;
-
-        if any_dialog {
-            match mouse_event.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    // DialogSelect dialogs — check if click is inside for item selection
-                    let in_dialog = if self.import_config_picker.is_visible() {
-                        self.import_config_picker.contains(mouse_event.column, mouse_event.row)
-                    } else if self.command_palette.is_visible() {
-                        self.command_palette.contains(mouse_event.column, mouse_event.row)
-                    } else {
-                        // Other dialogs (model_picker, settings, export, etc.) —
-                        // treat any click as "inside" to prevent accidental dismiss.
-                        // User must press Esc to close these.
-                        true
-                    };
-
-                    if in_dialog {
-                        // Click inside a DialogSelect — select the clicked item
-                        if self.import_config_picker.is_visible() {
-                            self.import_config_picker.handle_mouse_click(mouse_event.row);
-                        } else if self.command_palette.is_visible() {
-                            self.command_palette.handle_mouse_click(mouse_event.row);
-                        }
-                        // Other dialogs: click absorbed, no action needed
-                    } else {
-                        // Click outside a DialogSelect — dismiss and restore input focus
-                        self.close_secondary_views();
-                        self.focus = FocusTarget::Input;
-                    }
-                }
-                MouseEventKind::ScrollUp => {
-                    // Scroll through dialog items
-                    if self.import_config_picker.is_visible() { self.import_config_picker.move_up(); }
-                    else if self.command_palette.is_visible() { self.command_palette.move_up(); }
-                }
-                MouseEventKind::ScrollDown => {
-                    if self.import_config_picker.is_visible() { self.import_config_picker.move_down(); }
-                    else if self.command_palette.is_visible() { self.command_palette.move_down(); }
-                }
-                _ => {}
-            }
-            return; // Don't process any other mouse events when a dialog is open
+        // Non-DialogCore overlays (settings screen, context viz, …) — legacy
+        // behavior: absorb clicks so they never reach the transcript.
+        if self.settings_screen.visible || self.context_viz.visible {
+            return;
         }
 
         match mouse_event.kind {
@@ -666,6 +616,116 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Route a mouse event through the generic DialogBehavior pipeline for any
+    /// visible DialogCore-based modal dialog. Returns `true` when a dialog
+    /// consumed the event (modal dialogs swallow every mouse event while open).
+    /// Priority order mirrors the keyboard dispatch in keys.rs.
+    fn route_modal_dialog_mouse(&mut self, mouse_event: MouseEvent) -> bool {
+        macro_rules! route {
+            ($dialog:expr) => {{
+                match Self::dispatch_dialog_mouse($dialog, mouse_event) {
+                    DialogMouseAction::Dismiss => {
+                        self.close_secondary_views();
+                        self.focus = FocusTarget::Input;
+                    }
+                    DialogMouseAction::Consumed => {}
+                }
+                return true;
+            }};
+        }
+
+        if self.connect_dialog.is_visible() {
+            route!(&mut self.connect_dialog);
+        }
+        if self.bypass_permissions_dialog.is_visible() {
+            route!(&mut self.bypass_permissions_dialog);
+        }
+        if self.file_injection_dialog.is_visible() {
+            route!(&mut self.file_injection_dialog);
+        }
+        if self.onboarding_dialog.is_visible() {
+            route!(&mut self.onboarding_dialog);
+        }
+        if self.device_auth_dialog.is_visible() {
+            route!(&mut self.device_auth_dialog);
+        }
+        if self.ask_user_dialog.is_visible() {
+            route!(&mut self.ask_user_dialog);
+        }
+        if self.key_input_dialog.is_visible() {
+            route!(&mut self.key_input_dialog);
+        }
+        if self.free_mode_dialog.is_visible() {
+            route!(&mut self.free_mode_dialog);
+        }
+        if self.custom_provider_dialog.is_visible() {
+            route!(&mut self.custom_provider_dialog);
+        }
+        if self.import_config_dialog.is_visible() {
+            route!(&mut self.import_config_dialog);
+        }
+        if self.invalid_config_dialog.is_visible() {
+            route!(&mut self.invalid_config_dialog);
+        }
+        if self.model_picker.is_visible() {
+            route!(&mut self.model_picker);
+        }
+        if self.session_branching.is_visible() {
+            route!(&mut self.session_branching);
+        }
+        if self.session_browser.is_visible() {
+            route!(&mut self.session_browser);
+        }
+        if self.export_dialog.is_visible() {
+            route!(&mut self.export_dialog);
+        }
+        if self.feedback_survey.is_visible() {
+            route!(&mut self.feedback_survey);
+        }
+        if self.memory_file_selector.is_visible() {
+            route!(&mut self.memory_file_selector);
+        }
+        if self.diff_viewer.is_visible() {
+            route!(&mut self.diff_viewer);
+        }
+        if self.stats_dialog.is_visible() {
+            route!(&mut self.stats_dialog);
+        }
+        if self.desktop_upsell.is_visible() {
+            route!(&mut self.desktop_upsell);
+        }
+        if self.elicitation.is_visible() {
+            route!(&mut self.elicitation);
+        }
+        if self.import_config_picker.is_visible() {
+            route!(&mut self.import_config_picker);
+        }
+        if self.command_palette.is_visible() {
+            route!(&mut self.command_palette);
+        }
+        false
+    }
+
+    /// Shared dispatch for one modal dialog: a left click outside closes the
+    /// dialog itself (the caller then dismisses all secondary views and
+    /// restores input focus); every other event goes through the dialog's own
+    /// `handle_mouse` pipeline.
+    fn dispatch_dialog_mouse<D: DialogBehavior>(
+        dialog: &mut D,
+        mouse_event: MouseEvent,
+    ) -> DialogMouseAction {
+        use crossterm::event::MouseButton;
+
+        if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left))
+            && !dialog.core_shared().contains(mouse_event.column, mouse_event.row)
+        {
+            dialog.core().close();
+            return DialogMouseAction::Dismiss;
+        }
+        let _ = dialog.handle_mouse(mouse_event);
+        DialogMouseAction::Consumed
     }
 
 }

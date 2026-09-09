@@ -30,13 +30,13 @@ use claurst_core::types::Message;
 use crate::agents_view::AgentsMenuState;
 use crate::bridge_state::BridgeConnectionState;
 use crate::context_viz::ContextVizState;
-use crate::dialog_select::{DialogSelectState, SelectItem};
+use crate::dialogs::dialog_select::{DialogSelectState, SelectItem};
 use crate::dialogs::{McpApprovalDialogState, PermissionRequest};
-use crate::diff_viewer::DiffViewerState;
-use crate::export_dialog::ExportDialogState;
-use crate::import_config_dialog::ImportConfigDialogState;
+use crate::dialogs::diff_viewer::DiffViewerState;
+use crate::dialogs::export_dialog::ExportDialogState;
+use crate::dialogs::import_config_dialog::ImportConfigDialogState;
 use crate::mcp_view::McpViewState;
-use crate::model_picker::{EffortLevel, ModelPickerState};
+use crate::dialogs::model_picker::{EffortLevel, ModelPickerState};
 use crate::notifications::NotificationQueue;
 use crate::overlays::{
     GlobalSearchState, HelpOverlay, HistorySearchOverlay,
@@ -44,9 +44,9 @@ use crate::overlays::{
 };
 use crate::plugin_views::PluginHintBanner;
 use crate::prompt_input::PromptInputState;
-use crate::session_browser::SessionBrowserState;
+use crate::dialogs::session_browser::SessionBrowserState;
 use crate::settings_screen::SettingsScreen;
-use crate::stats_dialog::StatsDialogState;
+use crate::dialogs::stats_dialog::StatsDialogState;
 use crate::tasks_overlay::TasksOverlay;
 use crate::theme_screen::ThemeScreen;
 use ratatui::style::Color;
@@ -286,27 +286,27 @@ pub struct App {
     /// Read-only viewer for [Pasted text #N ...] placeholders.
     pub paste_viewer: crate::paste_viewer::PasteViewer,
     /// Session-quality feedback survey overlay.
-    pub feedback_survey: crate::feedback_survey::FeedbackSurveyState,
+    pub feedback_survey: crate::dialogs::feedback_survey::FeedbackSurveyState,
     /// Memory file selector overlay (AGENTS.md browser).
-    pub memory_file_selector: crate::memory_file_selector::MemoryFileSelectorState,
+    pub memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState,
     /// Read-only hooks configuration browser.
     pub hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState,
     /// Overage credit upsell banner.
     pub overage_upsell: crate::overage_upsell::OverageCreditUpsellState,
     /// Desktop app upsell startup dialog.
-    pub desktop_upsell: crate::desktop_upsell_startup::DesktopUpsellStartupState,
+    pub desktop_upsell: crate::dialogs::desktop_upsell_startup::DesktopUpsellStartupState,
     /// Startup error dialog for malformed settings.json or AGENTS.md.
-    pub invalid_config_dialog: crate::invalid_config_dialog::InvalidConfigDialogState,
+    pub invalid_config_dialog: crate::dialogs::invalid_config_dialog::InvalidConfigDialogState,
     /// Memory update notification banner.
     pub memory_update_notification: crate::memory_update_notification::MemoryUpdateNotificationState,
     /// MCP elicitation dialog (form requested by an MCP server).
-    pub elicitation: crate::elicitation_dialog::ElicitationDialogState,
+    pub elicitation: crate::dialogs::elicitation_dialog::ElicitationDialogState,
     /// Model picker overlay (/model command).
     pub model_picker: ModelPickerState,
     /// Session browser overlay (/session, /resume, /rename, /export).
     pub session_browser: SessionBrowserState,
     /// Session branching overlay (Ctrl+B) — create and switch branches.
-    pub session_branching: crate::session_branching::SessionBranchingState,
+    pub session_branching: crate::dialogs::session_branching::SessionBranchingState,
     /// Task progress overlay (Ctrl+T) — shows task status with toggle capability.
     pub tasks_overlay: TasksOverlay,
     /// Export format picker dialog (/export).
@@ -331,27 +331,27 @@ pub struct App {
     /// Bypass-permissions startup confirmation dialog.
     /// Shown at startup when --dangerously-skip-permissions was passed.
     /// User must explicitly accept or the session exits.
-    pub bypass_permissions_dialog: crate::bypass_permissions_dialog::BypassPermissionsDialogState,
+    pub bypass_permissions_dialog: crate::dialogs::bypass_permissions_dialog::BypassPermissionsDialogState,
     /// Whether the bypass-permissions dialog has been shown this session.
     pub bypass_permissions_dialog_shown: bool,
     /// File injection warning dialog.
     /// Shown when oversized or binary files are detected in @refs.
-    pub file_injection_dialog: crate::file_injection_dialog::FileInjectionDialogState,
+    pub file_injection_dialog: crate::dialogs::file_injection_dialog::FileInjectionDialogState,
     /// When true, the next file injection size check uses limit 0 (no limit),
     /// letting files that were "allowed" through the warning dialog be injected.
     pub file_injection_force: bool,
     /// First-launch onboarding welcome dialog.
-    pub onboarding_dialog: crate::onboarding_dialog::OnboardingDialogState,
+    pub onboarding_dialog: crate::dialogs::onboarding_dialog::OnboardingDialogState,
     /// Effort-level picker (/effort with no args).
     pub effort_picker: crate::effort_picker::EffortPickerState,
     /// API key input dialog (opened from /connect for key-based providers).
-    pub key_input_dialog: crate::key_input_dialog::KeyInputDialogState,
+    pub key_input_dialog: crate::dialogs::key_input_dialog::KeyInputDialogState,
     /// Custom provider dialog for URL + API key input.
-    pub custom_provider_dialog: crate::custom_provider_dialog::CustomProviderDialogState,
+    pub custom_provider_dialog: crate::dialogs::custom_provider_dialog::CustomProviderDialogState,
     /// "Free" composite-provider setup dialog (warning + 2 API keys).
-    pub free_mode_dialog: crate::free_mode_dialog::FreeModeDialogState,
+    pub free_mode_dialog: crate::dialogs::free_mode_dialog::FreeModeDialogState,
     /// Device code / browser auth dialog (GitHub Copilot device flow, Anthropic OAuth).
-    pub device_auth_dialog: crate::device_auth_dialog::DeviceAuthDialogState,
+    pub device_auth_dialog: crate::dialogs::device_auth_dialog::DeviceAuthDialogState,
     /// When set, the main loop should spawn the async auth task for this provider.
     pub device_auth_pending: Option<String>,
     /// Shared provider registry for dynamic model fetching.
@@ -370,7 +370,7 @@ pub struct App {
     pub session_list_pending: bool,
     /// Receiver for background session-list results.
     pub session_list_rx:
-        Option<tokio::sync::mpsc::Receiver<Vec<crate::session_browser::SessionEntry>>>,
+        Option<tokio::sync::mpsc::Receiver<Vec<crate::dialogs::session_browser::SessionEntry>>>,
     /// The most-recent sessions shown in the welcome screen's "Recent activity"
     /// list. Populated once from disk via the background loader below; empty
     /// until it resolves (or when there are genuinely no sessions).
@@ -434,13 +434,13 @@ pub struct App {
     /// /model picker opens.  Drained each frame so models appear as soon as
     /// the fetch completes.
     pub model_fetch_rx:
-        Option<tokio::sync::mpsc::Receiver<Result<Vec<crate::model_picker::ModelEntry>, ()>>>,
+        Option<tokio::sync::mpsc::Receiver<Result<Vec<crate::dialogs::model_picker::ModelEntry>, ()>>>,
     /// Receiver for `UserQuestionEvent`s produced by the AskUserQuestion tool.
     /// When a question arrives, `ask_user_dialog` is populated and shown.
     pub user_question_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<claurst_tools::UserQuestionEvent>>,
     /// State for the model-initiated ask-user question dialog.
-    pub ask_user_dialog: crate::ask_user_dialog::AskUserDialogState,
+    pub ask_user_dialog: crate::dialogs::ask_user_dialog::AskUserDialogState,
 
     // ---- Context window & rate limit info ----------------------------------
 
@@ -652,17 +652,17 @@ impl App {
             agents_menu: AgentsMenuState::new(),
             diff_viewer: DiffViewerState::new(),
             paste_viewer: crate::paste_viewer::PasteViewer::default(),
-            feedback_survey: crate::feedback_survey::FeedbackSurveyState::new(),
-            memory_file_selector: crate::memory_file_selector::MemoryFileSelectorState::new(),
+            feedback_survey: crate::dialogs::feedback_survey::FeedbackSurveyState::new(),
+            memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState::new(),
             hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState::new(),
             overage_upsell: crate::overage_upsell::OverageCreditUpsellState::new(),
-            desktop_upsell: crate::desktop_upsell_startup::DesktopUpsellStartupState::new(),
-            invalid_config_dialog: crate::invalid_config_dialog::InvalidConfigDialogState::new(),
+            desktop_upsell: crate::dialogs::desktop_upsell_startup::DesktopUpsellStartupState::new(),
+            invalid_config_dialog: crate::dialogs::invalid_config_dialog::InvalidConfigDialogState::new(),
             memory_update_notification: crate::memory_update_notification::MemoryUpdateNotificationState::new(),
-            elicitation: crate::elicitation_dialog::ElicitationDialogState::new(),
+            elicitation: crate::dialogs::elicitation_dialog::ElicitationDialogState::new(),
             model_picker: ModelPickerState::new(),
             session_browser: SessionBrowserState::new(),
-            session_branching: crate::session_branching::SessionBranchingState::new(),
+            session_branching: crate::dialogs::session_branching::SessionBranchingState::new(),
             tasks_overlay: TasksOverlay::new(),
             export_dialog: ExportDialogState::new(),
             context_viz: ContextVizState::new(),
@@ -672,16 +672,16 @@ impl App {
             mcp_session_trusted: std::collections::HashSet::new(),
             mcp_project_root: None,
             go_to_line_dialog: GoToLineDialog::new(),
-            bypass_permissions_dialog: crate::bypass_permissions_dialog::BypassPermissionsDialogState::new(),
+            bypass_permissions_dialog: crate::dialogs::bypass_permissions_dialog::BypassPermissionsDialogState::new(),
             bypass_permissions_dialog_shown: false,
-            file_injection_dialog: crate::file_injection_dialog::FileInjectionDialogState::new(),
+            file_injection_dialog: crate::dialogs::file_injection_dialog::FileInjectionDialogState::new(),
             file_injection_force: false,
-            onboarding_dialog: crate::onboarding_dialog::OnboardingDialogState::new(),
+            onboarding_dialog: crate::dialogs::onboarding_dialog::OnboardingDialogState::new(),
             effort_picker: crate::effort_picker::EffortPickerState::new(),
-            key_input_dialog: crate::key_input_dialog::KeyInputDialogState::new(),
-            custom_provider_dialog: crate::custom_provider_dialog::CustomProviderDialogState::new(),
-            free_mode_dialog: crate::free_mode_dialog::FreeModeDialogState::new(),
-            device_auth_dialog: crate::device_auth_dialog::DeviceAuthDialogState::new(),
+            key_input_dialog: crate::dialogs::key_input_dialog::KeyInputDialogState::new(),
+            custom_provider_dialog: crate::dialogs::custom_provider_dialog::CustomProviderDialogState::new(),
+            free_mode_dialog: crate::dialogs::free_mode_dialog::FreeModeDialogState::new(),
+            device_auth_dialog: crate::dialogs::device_auth_dialog::DeviceAuthDialogState::new(),
             device_auth_pending: None,
             provider_registry: None,
             model_registry,
@@ -732,7 +732,7 @@ impl App {
             pending_key: None,
             model_fetch_rx: None,
             user_question_rx: None,
-            ask_user_dialog: crate::ask_user_dialog::AskUserDialogState::new(),
+            ask_user_dialog: crate::dialogs::ask_user_dialog::AskUserDialogState::new(),
             context_window_size: 0,
             context_used_tokens: 0,
             rate_limit_5h_pct: None,

@@ -1786,7 +1786,7 @@ async fn run_interactive(
     use claurst_tui::{
         bridge_state::BridgeConnectionState, notifications::NotificationKind,
         render::render_app, restore_terminal, setup_terminal, App,
-        device_auth_dialog::DeviceAuthEvent,
+        dialogs::device_auth_dialog::DeviceAuthEvent,
     };
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
@@ -3685,7 +3685,7 @@ async fn run_interactive(
                         if !entries.is_empty() {
                             app.model_picker.set_models(entries);
                         }
-                    } else if claurst_tui::model_picker::provider_has_authoritative_live_models(
+                    } else if claurst_tui::dialogs::model_picker::provider_has_authoritative_live_models(
                         &provider,
                     ) {
                         app.model_picker.set_models(entries);
@@ -3740,8 +3740,8 @@ async fn run_interactive(
             // the credential can use; intersect it with the rich catalog
             // projection so we keep context/cost metadata for known ids but drop
             // models the subscription/key can't serve (e.g. legacy claude-3.x).
-            let anthropic_catalog: Vec<claurst_tui::model_picker::ModelEntry> = if is_anthropic {
-                claurst_tui::model_picker::models_for_provider_from_registry(
+            let anthropic_catalog: Vec<claurst_tui::dialogs::model_picker::ModelEntry> = if is_anthropic {
+                claurst_tui::dialogs::model_picker::models_for_provider_from_registry(
                     "anthropic",
                     model_registry.as_ref(),
                 )
@@ -3777,11 +3777,11 @@ async fn run_interactive(
                         };
                         match provider.discover_models().await {
                             Ok(models) => {
-                                let entries: Vec<claurst_tui::model_picker::ModelEntry> =
+                                let entries: Vec<claurst_tui::dialogs::model_picker::ModelEntry> =
                                     if is_anthropic && !models.is_empty() {
                                         let by_id: std::collections::HashMap<
                                             String,
-                                            claurst_tui::model_picker::ModelEntry,
+                                            claurst_tui::dialogs::model_picker::ModelEntry,
                                         > = anthropic_catalog
                                             .into_iter()
                                             .map(|e| (e.id.clone(), e))
@@ -3791,11 +3791,11 @@ async fn run_interactive(
                                             .map(|m| {
                                                 let id = m.id.to_string();
                                                 by_id.get(&id).cloned().unwrap_or_else(|| {
-                                                    claurst_tui::model_picker::ModelEntry {
+                                                    claurst_tui::dialogs::model_picker::ModelEntry {
                                                         id: id.clone(),
                                                         display_name: name_for(&id, &m.name),
                                                         description:
-                                                            claurst_tui::model_picker::format_context_window(
+                                                            claurst_tui::dialogs::model_picker::format_context_window(
                                                                 ctx_for(&id, m.context_window),
                                                             ),
                                                         is_current: false,
@@ -3808,10 +3808,10 @@ async fn run_interactive(
                                             .into_iter()
                                             .map(|m| {
                                                 let id = m.id.to_string();
-                                                claurst_tui::model_picker::ModelEntry {
+                                                claurst_tui::dialogs::model_picker::ModelEntry {
                                                     display_name: name_for(&id, &m.name),
                                                     description:
-                                                        claurst_tui::model_picker::format_context_window(
+                                                        claurst_tui::dialogs::model_picker::format_context_window(
                                                             ctx_for(&id, m.context_window),
                                                         ),
                                                     id,
@@ -4219,7 +4219,7 @@ async fn run_interactive(
         // modals don't fight over the screen.
         if !app.is_streaming
             && current_query.is_none()
-            && !app.bypass_permissions_dialog.visible
+            && !app.bypass_permissions_dialog.is_visible()
         {
             app.maybe_prompt_next_mcp_server();
         }

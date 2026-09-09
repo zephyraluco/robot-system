@@ -36,7 +36,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::Frame;
 
-use crate::model_picker::EffortLevel;
+use crate::dialogs::model_picker::EffortLevel;
 
 // ---------------------------------------------------------------------------
 // Palette (selector-only) — claurst red family

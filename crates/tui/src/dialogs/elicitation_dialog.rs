@@ -14,12 +14,15 @@
 //   3. Polling `ElicitationDialogState::take_result()` after each key event to
 //      detect a submitted or cancelled response.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
+use ratatui::Frame;
 use std::collections::HashMap;
+
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::ModalLayout;
 
 // ---------------------------------------------------------------------------
 // Field kinds
@@ -164,10 +167,10 @@ pub enum ElicitationResult {
 // ---------------------------------------------------------------------------
 
 /// Full state of the MCP elicitation dialog.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ElicitationDialogState {
-    /// Whether the dialog is currently visible.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Name of the MCP server that triggered this request.
     pub server_name: String,
     /// Optional message/prompt from the server shown above the form.
@@ -182,7 +185,14 @@ pub struct ElicitationDialogState {
 
 impl ElicitationDialogState {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            core: DialogCore::new("Input Required", 64, 12),
+            server_name: String::new(),
+            request_message: None,
+            fields: Vec::new(),
+            active_field: 0,
+            result: None,
+        }
     }
 
     /// Show the dialog with the given server name, optional message, and fields.
@@ -197,7 +207,15 @@ impl ElicitationDialogState {
         self.fields = fields;
         self.active_field = 0;
         self.result = None;
-        self.visible = true;
+        // Height adapts to the number of fields.
+        let field_count = self.fields.len() as u16;
+        let needed_h = (6 + field_count * 3).max(12);
+        self.core.set_size(64, needed_h);
+        self.core.open();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Take the pending result, leaving `None` in place.
@@ -208,7 +226,7 @@ impl ElicitationDialogState {
     /// Cancel the dialog and queue a `Cancelled` result.
     pub fn cancel(&mut self) {
         self.result = Some(ElicitationResult::Cancelled);
-        self.visible = false;
+        self.core.close();
     }
 
     /// Validate all fields and, if valid, submit the form.
@@ -224,7 +242,7 @@ impl ElicitationDialogState {
             .map(|f| (f.name.clone(), f.json_value()))
             .collect();
         self.result = Some(ElicitationResult::Submitted(values));
-        self.visible = false;
+        self.core.close();
         true
     }
 
@@ -348,110 +366,134 @@ impl ElicitationDialogState {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Render the elicitation dialog as a centered modal overlay.
-pub fn render_elicitation_dialog(state: &ElicitationDialogState, area: Rect, buf: &mut Buffer) {
-    if !state.visible || area.height < 10 || area.width < 40 {
-        return;
+impl DialogBehavior for ElicitationDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    // Compute dialog size (wider if there are many fields)
-    let field_count = state.fields.len() as u16;
-    let needed_h = (6 + field_count * 3).min(area.height.saturating_sub(2));
-    let dialog_h = needed_h.max(12).min(area.height);
-    let dialog_w = 64u16.min(area.width.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(dialog_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(dialog_h)) / 2;
-    let dialog_area = Rect { x, y, width: dialog_w, height: dialog_h };
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    Clear.render(dialog_area, buf);
-
-    let title = format!(" {} — Input Required ", state.server_name);
-    Block::default()
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .render(dialog_area, buf);
-
-    let inner = Rect {
-        x: dialog_area.x + 2,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(4),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Optional request message
-    if let Some(msg) = &state.request_message {
-        lines.push(Line::from(""));
-        for chunk in wrap_str(msg, inner.width as usize) {
-            lines.push(Line::from(vec![Span::styled(
-                chunk,
-                Style::default().fg(Color::White),
-            )]));
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: Esc is consumed by the dispatch pipeline (→ Cancelled); the
+        // caller reacts by calling `cancel()` to queue the result.
+        match key.code {
+            KeyCode::Enter => {
+                if self.submit() {
+                    DialogOutcome::Confirmed
+                } else {
+                    DialogOutcome::Handled // validation failed, stay open
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.prev_field();
+                } else {
+                    self.next_field();
+                }
+                DialogOutcome::Handled
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.prev_field();
+                DialogOutcome::Handled
+            }
+            KeyCode::Left => {
+                self.cycle_enum_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Right => {
+                self.cycle_enum_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(' ') => {
+                self.toggle_active();
+                DialogOutcome::Handled
+            }
+            KeyCode::Backspace => {
+                self.backspace();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(c) => {
+                self.insert_char(c);
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
         }
-        lines.push(Line::from(""));
-    } else {
-        lines.push(Line::from(""));
     }
 
-    // Fields
-    for (idx, field) in state.fields.iter().enumerate() {
-        let focused = idx == state.active_field;
-        let label_style = if focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let buf = frame.buffer_mut();
+        let inner = layout.body_area;
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Optional request message
+        if let Some(msg) = &self.request_message {
+            lines.push(Line::from(""));
+            for chunk in wrap_str(msg, inner.width as usize) {
+                lines.push(Line::from(vec![Span::styled(
+                    chunk,
+                    Style::default().fg(Color::White),
+                )]));
+            }
+            lines.push(Line::from(""));
         } else {
-            Style::default().fg(Color::Gray)
-        };
-
-        // Label line: "> Label  [required]"
-        let mut label_spans = vec![
-            Span::styled(if focused { "> " } else { "  " }, label_style),
-            Span::styled(field.title.clone(), label_style),
-        ];
-        if field.required {
-            label_spans.push(Span::styled(" *", Style::default().fg(Color::Red)));
+            lines.push(Line::from(""));
         }
-        if let Some(err) = &field.error {
-            label_spans.push(Span::styled(
-                format!("  ← {err}"),
-                Style::default().fg(Color::Red),
-            ));
-        }
-        lines.push(Line::from(label_spans));
 
-        // Value line
-        let value_line = render_field_value_line(field, focused, inner.width as usize);
-        lines.push(value_line);
+        // Fields
+        for (idx, field) in self.fields.iter().enumerate() {
+            let focused = idx == self.active_field;
+            let label_style = if focused {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
 
-        // Optional description
-        if let Some(desc) = &field.description {
-            lines.push(Line::from(vec![Span::styled(
-                format!("   {desc}"),
-                Style::default().fg(Color::DarkGray),
-            )]));
+            // Label line: "> Label  [required]"
+            let mut label_spans = vec![
+                Span::styled(if focused { "> " } else { "  " }, label_style),
+                Span::styled(field.title.clone(), label_style),
+            ];
+            if field.required {
+                label_spans.push(Span::styled(" *", Style::default().fg(Color::Red)));
+            }
+            if let Some(err) = &field.error {
+                label_spans.push(Span::styled(
+                    format!("  ← {err}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+            lines.push(Line::from(label_spans));
+
+            // Value line
+            let value_line = render_field_value_line(field, focused, inner.width as usize);
+            lines.push(value_line);
+
+            // Optional description
+            if let Some(desc) = &field.description {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("   {desc}"),
+                    Style::default().fg(Color::DarkGray),
+                )]));
+            }
         }
+
+        // Hint line
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "  Tab: next field   Enter: submit   Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        // Render with scroll if needed
+        let total = lines.len();
+        let visible_h = inner.height as usize;
+        let scroll = total.saturating_sub(visible_h);
+        let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).collect();
+        Paragraph::new(visible_lines).render(inner, buf);
     }
-
-    // Hint line
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "  Tab: next field   Enter: submit   Esc: cancel",
-        Style::default().fg(Color::DarkGray),
-    )]));
-
-    // Render with scroll if needed
-    let total = lines.len();
-    let visible_h = inner.height as usize;
-    let scroll = total.saturating_sub(visible_h);
-    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).collect();
-    Paragraph::new(visible_lines).render(inner, buf);
 }
 
 fn render_field_value_line<'a>(field: &'a ElicitationField, focused: bool, width: usize) -> Line<'a> {
@@ -596,7 +638,7 @@ mod tests {
     #[test]
     fn elicitation_show_sets_visible() {
         let s = make_dialog();
-        assert!(s.visible);
+        assert!(s.is_visible());
         assert_eq!(s.server_name, "test-server");
         assert_eq!(s.fields.len(), 3);
     }
@@ -605,7 +647,7 @@ mod tests {
     fn elicitation_cancel_produces_result() {
         let mut s = make_dialog();
         s.cancel();
-        assert!(!s.visible);
+        assert!(!s.is_visible());
         let result = s.take_result();
         assert!(matches!(result, Some(ElicitationResult::Cancelled)));
     }
@@ -616,7 +658,7 @@ mod tests {
         // username is required and empty — submit should fail
         let ok = s.submit();
         assert!(!ok, "submit should fail when required text field is empty");
-        assert!(s.visible, "dialog should stay open after failed submit");
+        assert!(s.is_visible(), "dialog should stay open after failed submit");
         assert!(s.fields[0].error.is_some());
     }
 
@@ -626,7 +668,7 @@ mod tests {
         s.fields[0].value = "alice".to_string();
         let ok = s.submit();
         assert!(ok);
-        assert!(!s.visible);
+        assert!(!s.is_visible());
         let result = s.take_result();
         if let Some(ElicitationResult::Submitted(map)) = result {
             assert_eq!(
@@ -761,21 +803,31 @@ mod tests {
 
     #[test]
     fn elicitation_render_smoke() {
+        use crate::dialogs::dialog::DialogBehavior as _;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
         let s = make_dialog();
         let area = Rect { x: 0, y: 0, width: 100, height: 30 };
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        render_elicitation_dialog(&s, area, &mut buf);
-        let rendered = buf.content.iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| {
+            s.render(frame, area);
+        }).unwrap();
+        let rendered = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
         assert!(rendered.contains("test-server") || rendered.contains("Input Required"));
     }
 
     #[test]
     fn elicitation_not_rendered_when_invisible() {
+        use crate::dialogs::dialog::DialogBehavior as _;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
         let s = ElicitationDialogState::new();
         let area = Rect { x: 0, y: 0, width: 100, height: 30 };
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        render_elicitation_dialog(&s, area, &mut buf);
-        let rendered = buf.content.iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| {
+            s.render(frame, area);
+        }).unwrap();
+        let rendered = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<Vec<_>>().join("");
         assert!(!rendered.contains("Input Required"));
     }
 

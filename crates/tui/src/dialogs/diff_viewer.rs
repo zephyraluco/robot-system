@@ -3,8 +3,10 @@
 //!
 //! Shows a two-pane diff dialog: file list (left) + unified diff detail (right).
 //! Keyboard: ↑↓ navigate files, Tab switch pane, t toggle diff type, Esc close.
+//! Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
 use claurst_core::file_history::FileHistory;
+use crossterm::event::{KeyCode, KeyEvent};
 use once_cell::sync::Lazy;
 use ratatui::{
     buffer::Buffer,
@@ -13,16 +15,15 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use ratatui::Frame;
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 
-use crate::overlays::{
-    begin_modal_buf, modal_header_line_area, render_modal_title_buf, CLAURST_ACCENT,
-    CLAURST_MUTED, CLAURST_PANEL_BG, CLAURST_TEXT,
-};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{ModalLayout, CLAURST_ACCENT, CLAURST_MUTED, CLAURST_PANEL_BG, CLAURST_TEXT};
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
@@ -119,8 +120,8 @@ pub struct DiffViewerState {
     pub detail_scroll: u16,
     /// Rendered line cache: (file_index, terminal_width) → lines.
     render_cache: HashMap<(usize, u16), Vec<String>>,
-    /// Whether the dialog is open.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Per-file collapsed state (indexed by file position in `files`).
     pub collapsed: Vec<bool>,
 }
@@ -135,7 +136,9 @@ impl DiffViewerState {
             diff_type: DiffType::GitDiff,
             detail_scroll: 0,
             render_cache: HashMap::new(),
-            visible: false,
+            core: DialogCore::new("Review changes", 98, 32)
+                .header_height(2)
+                .footer_height(1),
             collapsed: Vec::new(),
         }
     }
@@ -159,7 +162,11 @@ impl DiffViewerState {
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     pub fn select_prev(&mut self) {
@@ -221,7 +228,7 @@ impl DiffViewerState {
     fn open_for_type(&mut self, diff_type: DiffType, project_root: &std::path::Path) {
         self.diff_type = diff_type;
         self.reload_files(project_root);
-        self.visible = true;
+        self.core.open();
     }
 
     fn reload_files(&mut self, project_root: &std::path::Path) {
@@ -238,6 +245,128 @@ impl DiffViewerState {
 
 impl Default for DiffViewerState {
     fn default() -> Self { Self::new() }
+}
+
+impl DialogBehavior for DiffViewerState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // NOTE: 'd' (toggle diff type) needs the project root, which lives on
+        // the App — it is handled app-level in keys.rs.
+        match key.code {
+            KeyCode::Char('q') => {
+                self.close();
+                DialogOutcome::Cancelled
+            }
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                self.switch_pane();
+                DialogOutcome::Handled
+            }
+            KeyCode::Up => {
+                if self.active_pane == DiffPane::FileList {
+                    self.select_prev();
+                } else {
+                    self.scroll_detail_up();
+                }
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                if self.active_pane == DiffPane::FileList {
+                    self.select_next();
+                } else {
+                    self.scroll_detail_down();
+                }
+                DialogOutcome::Handled
+            }
+            KeyCode::PageUp => {
+                self.scroll_detail_up();
+                DialogOutcome::Handled
+            }
+            KeyCode::PageDown => {
+                self.scroll_detail_down();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(' ') if self.active_pane == DiffPane::FileList => {
+                self.toggle_file_collapse();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let buf = frame.buffer_mut();
+
+        let total_added: u32 = self.files.iter().map(|file| file.added).sum();
+        let total_removed: u32 = self.files.iter().map(|file| file.removed).sum();
+        if layout.header_area.height > 1 {
+            let subtitle_area = Rect {
+                x: layout.header_area.x,
+                y: layout.header_area.y + 1,
+                width: layout.header_area.width,
+                height: layout.header_area.height - 1,
+            };
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(
+                    " {} files  ·  +{} -{}  ·  {} mode",
+                    self.files.len(),
+                    total_added,
+                    total_removed,
+                    match self.diff_type {
+                        DiffType::GitDiff => "git diff",
+                        DiffType::TurnDiff => "turn diff",
+                    }
+                ),
+                Style::default().fg(CLAURST_MUTED),
+            )]))
+            .render(subtitle_area, buf);
+        }
+
+        if self.files.is_empty() {
+            let empty = match self.diff_type {
+                DiffType::GitDiff => " No git changes available.",
+                DiffType::TurnDiff => " No changes were captured for this turn.",
+            };
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    empty,
+                    Style::default().fg(CLAURST_TEXT).add_modifier(Modifier::ITALIC),
+                )]),
+                Line::from(""),
+                Line::from(vec![Span::styled(
+                    " Use /review for the current git diff, or make an edit and reopen /changes.",
+                    Style::default().fg(CLAURST_MUTED),
+                )]),
+            ])
+            .render(layout.body_area, buf);
+            return;
+        }
+
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(31), Constraint::Length(1), Constraint::Min(1)])
+            .split(layout.body_area);
+
+        let divider: Vec<Line<'static>> = (0..layout.body_area.height)
+            .map(|_| Line::from(Span::styled("│", Style::default().fg(CLAURST_MUTED))))
+            .collect();
+        Paragraph::new(divider).render(panes[1], buf);
+
+        render_file_list(self, panes[0], buf);
+        render_diff_detail(self, panes[2], buf);
+        Paragraph::new(Line::from(vec![Span::styled(
+            " tab switch pane  ·  ↑↓ navigate  ·  space collapse  ·  d toggle scope",
+            Style::default().fg(CLAURST_MUTED).add_modifier(Modifier::ITALIC),
+        )]))
+        .render(layout.footer_area, buf);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,79 +663,8 @@ fn parse_hunk_header(line: &str) -> (u32, u32, u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// Rendering helpers (used by `DialogBehavior::render_content` above)
 // ---------------------------------------------------------------------------
-
-/// Render the diff dialog overlay.
-pub fn render_diff_dialog(state: &mut DiffViewerState, area: Rect, buf: &mut Buffer) {
-    if !state.visible {
-        return;
-    }
-
-    let layout = begin_modal_buf(buf, area, 98, 32, 2, 1);
-    let title = match state.diff_type {
-        DiffType::GitDiff => "Review changes",
-        DiffType::TurnDiff => "Changes from this turn",
-    };
-    render_modal_title_buf(buf, layout.header_area, title, "esc");
-    let total_added: u32 = state.files.iter().map(|file| file.added).sum();
-    let total_removed: u32 = state.files.iter().map(|file| file.removed).sum();
-    if let Some(subtitle_area) = modal_header_line_area(layout.header_area, 1) {
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!(
-                " {} files  ·  +{} -{}  ·  {} mode",
-                state.files.len(),
-                total_added,
-                total_removed,
-                match state.diff_type {
-                    DiffType::GitDiff => "git diff",
-                    DiffType::TurnDiff => "turn diff",
-                }
-            ),
-            Style::default().fg(CLAURST_MUTED),
-        )]))
-        .render(subtitle_area, buf);
-    }
-
-    if state.files.is_empty() {
-        let empty = match state.diff_type {
-            DiffType::GitDiff => " No git changes available.",
-            DiffType::TurnDiff => " No changes were captured for this turn.",
-        };
-        Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                empty,
-                Style::default().fg(CLAURST_TEXT).add_modifier(Modifier::ITALIC),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                " Use /review for the current git diff, or make an edit and reopen /changes.",
-                Style::default().fg(CLAURST_MUTED),
-            )]),
-        ])
-        .render(layout.body_area, buf);
-        return;
-    }
-
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(31), Constraint::Length(1), Constraint::Min(1)])
-        .split(layout.body_area);
-
-    let divider: Vec<Line<'static>> = (0..layout.body_area.height)
-        .map(|_| Line::from(Span::styled("│", Style::default().fg(CLAURST_MUTED))))
-        .collect();
-    Paragraph::new(divider).render(panes[1], buf);
-
-    render_file_list(state, panes[0], buf);
-    render_diff_detail(state, panes[2], buf);
-    Paragraph::new(Line::from(vec![Span::styled(
-        " tab switch pane  ·  ↑↓ navigate  ·  space collapse  ·  d toggle scope",
-        Style::default().fg(CLAURST_MUTED).add_modifier(Modifier::ITALIC),
-    )]))
-    .render(layout.footer_area, buf);
-}
 
 fn render_file_list(state: &DiffViewerState, area: Rect, buf: &mut Buffer) {
     let focused = state.active_pane == DiffPane::FileList;
@@ -1287,16 +1345,17 @@ mod tests {
 
     #[test]
     fn diff_viewer_collapse_renders_without_panic() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut state = DiffViewerState::new();
-        state.visible = true;
+        state.core.open();
         state.files = vec![make_file("src/lib.rs", 5, 2, false)];
         state.collapsed = vec![true]; // collapsed
         terminal.draw(|frame| {
             let area = frame.area();
-            render_diff_dialog(&mut state, area, frame.buffer_mut());
+            state.render(frame, area);
         }).unwrap();
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol().chars().next().unwrap_or(' ')).collect();

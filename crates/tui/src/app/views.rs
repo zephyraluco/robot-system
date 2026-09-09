@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::agents_view::{AgentInfo, AgentStatus};
-use crate::export_dialog::ExportFormat;
+use crate::dialogs::export_dialog::ExportFormat;
 use crate::mcp_view::{McpServerView, McpToolView, McpViewStatus};
 use super::App;
 
@@ -44,39 +44,39 @@ impl App {
             || self.history_search.is_some()
             || self.settings_screen.visible
             || self.theme_screen.visible
-            || self.stats_dialog.visible
+            || self.stats_dialog.is_visible()
             || self.mcp_view.visible
             || self.agents_menu.visible
-            || self.diff_viewer.visible
+            || self.diff_viewer.is_visible()
             || self.paste_viewer.visible
             || self.global_search.visible
-            || self.feedback_survey.visible
-            || self.memory_file_selector.visible
+            || self.feedback_survey.is_visible()
+            || self.memory_file_selector.is_visible()
             || self.hooks_config_menu.visible
             || self.overage_upsell.visible
             || self.memory_update_notification.visible
-            || self.desktop_upsell.visible
-            || self.import_config_dialog.visible
-            || self.invalid_config_dialog.visible
-            || self.bypass_permissions_dialog.visible
-            || self.ask_user_dialog.visible
-            || self.onboarding_dialog.visible
+            || self.desktop_upsell.is_visible()
+            || self.import_config_dialog.is_visible()
+            || self.invalid_config_dialog.is_visible()
+            || self.bypass_permissions_dialog.is_visible()
+            || self.ask_user_dialog.is_visible()
+            || self.onboarding_dialog.is_visible()
             || self.import_config_picker.is_visible()
             || self.connect_dialog.is_visible()
-            || self.key_input_dialog.visible
-            || self.custom_provider_dialog.visible
+            || self.key_input_dialog.is_visible()
+            || self.custom_provider_dialog.is_visible()
             || self.free_mode_dialog.is_visible()
             || self.device_auth_dialog.is_visible()
             || self.command_palette.is_visible()
-            || self.elicitation.visible
+            || self.elicitation.is_visible()
             || self.model_picker.is_visible()
             || self.effort_picker.visible
-            || self.session_browser.visible
-            || self.session_branching.visible
-            || self.export_dialog.visible
+            || self.session_browser.is_visible()
+            || self.session_branching.is_visible()
+            || self.export_dialog.is_visible()
             || self.context_viz.visible
             || self.mcp_approval.visible
-            || self.file_injection_dialog.visible
+            || self.file_injection_dialog.is_visible()
             || self.context_menu_state.is_some()
     }
 
@@ -89,7 +89,7 @@ impl App {
 
     /// Perform the export based on the selected format. Returns the path written.
     pub fn perform_export(&mut self) -> Option<String> {
-        use crate::export_dialog::{export_as_json, export_as_markdown};
+        use crate::dialogs::export_dialog::{export_as_json, export_as_markdown};
         let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let (filename, content) = match self.export_dialog.selected {
             ExportFormat::Json => {

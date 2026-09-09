@@ -92,6 +92,11 @@ impl DialogOutcome {
     pub fn is_confirmed(self) -> bool {
         matches!(self, DialogOutcome::Confirmed)
     }
+
+    /// `true` when handling the event closed the dialog without action.
+    pub fn is_cancelled(self) -> bool {
+        matches!(self, DialogOutcome::Cancelled)
+    }
 }
 
 // ---------------------------------------------------------------------------

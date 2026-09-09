@@ -3,7 +3,7 @@
 //! fast-mode notice.
 //
 //! Built on the generic dialog base (`DialogCore` + `DialogBehavior` in
-//! `crate::dialog`): the embedded `DialogCore` owns visibility/geometry and
+//! `crate::dialogs::dialog`): the embedded `DialogCore` owns visibility/geometry and
 //! the `DialogBehavior` dispatch pipeline (`handle_key` / `handle_mouse` /
 //! `render`) captures every keyboard + mouse event while the picker is open.
 
@@ -15,7 +15,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::{modal_search_line, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------

@@ -69,8 +69,6 @@ pub mod figures;
 pub mod rustle;
 /// Context window and rate-limit visualization overlay (/context).
 pub mod context_viz;
-/// Export format picker dialog (/export).
-pub mod export_dialog;
 /// Clipboard image paste and Ctrl+V text paste.
 pub mod image_paste;
 /// Inline image rendering via the Kitty graphics protocol (with text fallback).
@@ -83,7 +81,7 @@ pub mod input;
 pub mod render;
 /// Post-paint OSC 8 hyperlink emission — makes URLs Ctrl/Cmd-clickable.
 pub mod osc8;
-/// Permission dialogs and confirmation dialogs.
+/// All TUI dialog components (built on `dialogs::dialog`'s `DialogCore`).
 pub mod dialogs;
 /// Notification / banner system.
 pub mod notifications;
@@ -99,8 +97,6 @@ pub mod settings_screen;
 pub mod theme_screen;
 /// Color palette management for different themes and accessibility support.
 pub mod theme_colors;
-/// Diff viewer dialog (two-pane: file list + unified diff detail).
-pub mod diff_viewer;
 /// Read-only viewer for [Pasted text #N ...] placeholders.
 pub mod paste_viewer;
 /// Virtual scrollable list for efficient message rendering.
@@ -111,65 +107,24 @@ pub mod messages;
 pub mod transcript_turn;
 /// Agent definitions list and coordinator progress view.
 pub mod agents_view;
-/// Stats dialog with token usage and cost charts.
-pub mod stats_dialog;
 /// MCP server management UI.
 pub mod mcp_view;
 /// Complete prompt input with vim mode, history, typeahead, and paste handling.
 pub mod prompt_input;
-/// Session quality feedback survey overlay.
-pub mod feedback_survey;
-/// Memory file selector overlay (AGENTS.md browser).
-pub mod memory_file_selector;
 /// Read-only hooks configuration browser.
 pub mod hooks_config_menu;
 /// Overage credit upsell banner (shown when user exceeds free-tier limit).
 pub mod overage_upsell;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
 pub mod message_copy;
-/// Desktop app upsell startup dialog (shown at startup on macOS/Windows x64).
-pub mod desktop_upsell_startup;
 /// Memory update notification banner (shown after Claurst updates a AGENTS.md file).
 pub mod memory_update_notification;
-/// MCP elicitation dialog (form-based user input requested by MCP servers).
-pub mod elicitation_dialog;
-/// Model picker overlay (/model command).
-pub mod model_picker;
-/// Session browser overlay (/session, /resume, /rename, /export).
-pub mod session_browser;
-/// Startup dialog for malformed settings.json or AGENTS.md.
-pub mod invalid_config_dialog;
-/// Startup confirmation dialog for --dangerously-skip-permissions mode.
-pub mod bypass_permissions_dialog;
-/// First-launch onboarding / welcome dialog.
-pub mod onboarding_dialog;
 /// Effort-level picker dialog (/effort).
 pub mod effort_picker;
-/// Reusable fuzzy-search selection dialog widget.
-pub mod dialog_select;
-/// Generic dialog base component (`DialogCore` + `DialogBehavior`) shared by
-/// all dialogs: modal frame chrome, event capture (keyboard + mouse), focus.
-pub mod dialog;
-/// Masked text input overlay for entering API keys.
-pub mod key_input_dialog;
-/// Modal dialog for entering custom provider URL + API key.
-pub mod custom_provider_dialog;
-/// Setup dialog for the composite "Free" provider (Zen → OpenRouter).
-pub mod free_mode_dialog;
-/// Device code / browser-based auth overlay (GitHub Copilot, Anthropic OAuth).
-pub mod device_auth_dialog;
 /// Task progress overlay (Ctrl+T) — shows task status with inline toggle.
 pub mod tasks_overlay;
-/// Import-config preview and confirmation dialog.
-pub mod import_config_dialog;
-/// Session branching overlay (Ctrl+B) — create and switch between conversation branches.
-pub mod session_branching;
-/// Model-initiated question dialog (AskUserQuestion tool).
-pub mod ask_user_dialog;
 /// File injection utilities for parsing @file references.
 pub mod file_injection;
-/// File injection warning dialog (shown when oversized files detected).
-pub mod file_injection_dialog;
 
 // ---------------------------------------------------------------------------
 // Public re-exports
@@ -178,33 +133,33 @@ pub mod file_injection_dialog;
 pub use app::{App, try_copy_to_clipboard};
 pub use notifications::NotificationKind;
 pub use input::{is_slash_command, parse_slash_command};
-pub use feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResponse};
-pub use memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
+pub use dialogs::feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResponse};
+pub use dialogs::memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
 pub use hooks_config_menu::{HooksConfigMenuState, HookEntry};
 pub use overage_upsell::{OverageCreditUpsellState, render_overage_upsell};
-pub use desktop_upsell_startup::{DesktopUpsellStartupState, DesktopUpsellSelection, render_desktop_upsell_startup};
+pub use dialogs::desktop_upsell_startup::{DesktopUpsellStartupState, DesktopUpsellSelection};
 pub use memory_update_notification::{MemoryUpdateNotificationState, render_memory_update_notification, get_relative_memory_path};
-pub use elicitation_dialog::{ElicitationDialogState, ElicitationField, ElicitationFieldKind, ElicitationResult, render_elicitation_dialog};
-pub use diff_viewer::{DiffViewerState, DiffPane, DiffType, load_git_diff, parse_unified_diff, render_diff_dialog};
+pub use dialogs::elicitation_dialog::{ElicitationDialogState, ElicitationField, ElicitationFieldKind, ElicitationResult};
+pub use dialogs::diff_viewer::{DiffViewerState, DiffPane, DiffType, load_git_diff, parse_unified_diff};
 pub use agents_view::{AgentInfo, AgentStatus, AgentsMenuState, AgentDefinition, render_agents_menu, render_coordinator_status, load_agent_definitions};
-pub use stats_dialog::{StatsDialogState, StatsTab, load_stats, render_stats_dialog};
+pub use dialogs::stats_dialog::{StatsDialogState, StatsTab, load_stats};
 pub use mcp_view::{McpViewState, McpServerView, McpToolView, McpViewStatus, render_mcp_view};
 pub use prompt_input::{PromptInputState, VimMode, VimPendingState, VimOperator, VimFindKind, InputMode, render_prompt_input, handle_paste, compute_typeahead};
-pub use model_picker::{ModelPickerState, ModelEntry, EffortLevel, model_supports_effort};
-pub use session_browser::{SessionBrowserState, SessionBrowserMode, SessionEntry, render_session_browser};
-pub use import_config_dialog::{ImportConfigDialogState, render_import_config_dialog};
-pub use session_branching::{SessionBranchingState, BranchBrowserMode, BranchInfo, render_session_branching};
-pub use invalid_config_dialog::{InvalidConfigDialogState, InvalidConfigKind, render_invalid_config_dialog};
-pub use bypass_permissions_dialog::{BypassPermissionsDialogState, render_bypass_permissions_dialog};
-pub use onboarding_dialog::{OnboardingDialogState, render_onboarding_dialog};
-pub use dialog_select::{DialogSelectState, SelectItem};
-pub use key_input_dialog::{KeyInputDialogState, render_key_input_dialog};
-pub use custom_provider_dialog::{CustomProviderDialogState, CustomProviderField, render_custom_provider_dialog};
-pub use free_mode_dialog::{FreeModeDialogState, FreeModeField};
+pub use dialogs::model_picker::{ModelPickerState, ModelEntry, EffortLevel, model_supports_effort};
+pub use dialogs::session_browser::{SessionBrowserState, SessionBrowserMode, SessionEntry};
+pub use dialogs::import_config_dialog::{ImportConfigDialogState};
+pub use dialogs::session_branching::{SessionBranchingState, BranchBrowserMode, BranchInfo};
+pub use dialogs::invalid_config_dialog::{InvalidConfigDialogState, InvalidConfigKind};
+pub use dialogs::bypass_permissions_dialog::{BypassPermissionsDialogState};
+pub use dialogs::onboarding_dialog::{OnboardingDialogState};
+pub use dialogs::dialog_select::{DialogSelectState, SelectItem};
+pub use dialogs::key_input_dialog::{KeyInputDialogState};
+pub use dialogs::custom_provider_dialog::{CustomProviderDialogState, CustomProviderField};
+pub use dialogs::free_mode_dialog::{FreeModeDialogState, FreeModeField};
 // (FreeModeField type is now per-provider; legacy callers may still import both names.)
-pub use device_auth_dialog::{DeviceAuthDialogState, DeviceAuthStatus, DeviceAuthEvent};
+pub use dialogs::device_auth_dialog::{DeviceAuthDialogState, DeviceAuthStatus, DeviceAuthEvent};
 pub use file_injection::{parse_at_refs, build_file_blocks, AtFileRef, AtFileIssue};
-pub use file_injection_dialog::{FileInjectionDialogState, FileInjectionOutcome, render_file_injection_dialog};
+pub use dialogs::file_injection_dialog::{FileInjectionDialogState, FileInjectionOutcome};
 
 // ---------------------------------------------------------------------------
 // Terminal initialization / teardown helpers (public API)
@@ -508,10 +463,10 @@ mod tests {
         app.agents_menu.visible = true;
 
         assert!(app.intercept_slash_command("stats"));
-        assert!(app.stats_dialog.visible);
+        assert!(app.stats_dialog.is_visible());
         assert!(!app.mcp_view.visible);
         assert!(!app.agents_menu.visible);
-        assert!(!app.diff_viewer.visible);
+        assert!(!app.diff_viewer.is_visible());
     }
 
     #[test]
@@ -584,7 +539,7 @@ mod tests {
         let mut app = make_app();
 
         assert!(app.intercept_slash_command("changes"));
-        assert!(app.diff_viewer.visible);
+        assert!(app.diff_viewer.is_visible());
         assert_eq!(app.diff_viewer.diff_type, DiffType::TurnDiff);
     }
 
@@ -1005,17 +960,17 @@ mod tests {
     #[test]
     fn test_turn_diff_toggle_uses_cached_turn_files() {
         let mut state = DiffViewerState::new();
-        state.set_turn_diff(vec![diff_viewer::FileDiffStats {
+        state.set_turn_diff(vec![dialogs::diff_viewer::FileDiffStats {
             path: "src/lib.rs".to_string(),
             added: 2,
             removed: 1,
             binary: false,
             is_new_file: false,
-            hunks: vec![diff_viewer::DiffHunk {
+            hunks: vec![dialogs::diff_viewer::DiffHunk {
                 old_range: (1, 1),
                 new_range: (1, 2),
-                lines: vec![diff_viewer::DiffLine {
-                    kind: diff_viewer::DiffLineKind::Header,
+                lines: vec![dialogs::diff_viewer::DiffLine {
+                    kind: dialogs::diff_viewer::DiffLineKind::Header,
                     content: "@@ -1,1 +1,2 @@".to_string(),
                     old_line_no: None,
                     new_line_no: None,
@@ -1041,7 +996,7 @@ mod tests {
             "FileEdit",
         );
 
-        let files = diff_viewer::build_turn_diff(&history, 3, std::path::Path::new("/workspace"));
+        let files = dialogs::diff_viewer::build_turn_diff(&history, 3, std::path::Path::new("/workspace"));
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/lib.rs");
@@ -1072,16 +1027,20 @@ mod tests {
 
     #[test]
     fn test_render_diff_dialog_shows_turn_empty_state() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut state = DiffViewerState::new();
-        state.visible = true;
+        state.core.open();
         state.diff_type = DiffType::TurnDiff;
         let area = Rect { x: 0, y: 0, width: 80, height: 20 };
-        let mut buf = Buffer::empty(area);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| {
+            state.render(frame, area);
+        }).unwrap();
 
-        diff_viewer::render_diff_dialog(&mut state, area, &mut buf);
-
-        let rendered = buf
-            .content
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
             .iter()
             .map(|cell| cell.symbol())
             .collect::<Vec<_>>()
@@ -1114,13 +1073,13 @@ mod tests {
     #[test]
     fn test_stats_dialog_keys_switch_tab_and_close() {
         let mut app = make_app();
-        app.stats_dialog.visible = true;
+        app.stats_dialog.core.open();
 
         app.handle_key_event(key(KeyCode::Right));
         assert_eq!(app.stats_dialog.tab, StatsTab::DailyTokens);
 
         app.handle_key_event(key(KeyCode::Esc));
-        assert!(!app.stats_dialog.visible);
+        assert!(!app.stats_dialog.is_visible());
     }
 
     #[test]

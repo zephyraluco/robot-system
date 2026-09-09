@@ -1,9 +1,9 @@
 //! Provider/model/config management and import-config flow.
 
 use claurst_core::config::{Config, Settings};
-use crate::dialog_select::{DialogSelectState, SelectItem};
-use crate::import_config_dialog::ImportConfigDialogState;
-use crate::model_picker::ModelPickerState;
+use crate::dialogs::dialog_select::{DialogSelectState, SelectItem};
+use crate::dialogs::import_config_dialog::ImportConfigDialogState;
+use crate::dialogs::model_picker::ModelPickerState;
 use super::App;
 
 /// Return the environment variable name for a given provider ID.
@@ -309,7 +309,7 @@ impl App {
     }
 
     pub(super) fn display_default_model_for_provider(&self, provider_id: &str) -> String {
-        crate::model_picker::default_model_for_provider(provider_id, &self.model_registry)
+        crate::dialogs::model_picker::default_model_for_provider(provider_id, &self.model_registry)
     }
 
     pub(super) fn open_model_picker_for_provider(&mut self, provider_id: &str, title: Option<String>) {
@@ -323,7 +323,7 @@ impl App {
             self.model_registry.load_cache(&cache_path);
         }
 
-        let models = crate::model_picker::models_for_provider_from_registry(
+        let models = crate::dialogs::model_picker::models_for_provider_from_registry(
             provider_id,
             &self.model_registry,
         );
@@ -334,7 +334,7 @@ impl App {
         // discover from, so skip the background fetch entirely and treat the
         // projection as final. Live-endpoint / curated-list providers still
         // fetch their real model list to overlay onto the projection.
-        if crate::model_picker::provider_uses_catalog_projection(provider_id) {
+        if crate::dialogs::model_picker::provider_uses_catalog_projection(provider_id) {
             self.model_picker.loading_models = false;
             self.model_picker_fetch_pending = false;
         } else {
@@ -492,10 +492,10 @@ impl App {
         self.import_config_picker = DialogSelectState::new("Import config", import_config_picker_items());
         self.import_config_dialog = ImportConfigDialogState::new();
         self.model_picker = ModelPickerState::new();
-        self.key_input_dialog = crate::key_input_dialog::KeyInputDialogState::new();
-        self.custom_provider_dialog = crate::custom_provider_dialog::CustomProviderDialogState::new();
-        self.free_mode_dialog = crate::free_mode_dialog::FreeModeDialogState::new();
-        self.device_auth_dialog = crate::device_auth_dialog::DeviceAuthDialogState::new();
+        self.key_input_dialog = crate::dialogs::key_input_dialog::KeyInputDialogState::new();
+        self.custom_provider_dialog = crate::dialogs::custom_provider_dialog::CustomProviderDialogState::new();
+        self.free_mode_dialog = crate::dialogs::free_mode_dialog::FreeModeDialogState::new();
+        self.device_auth_dialog = crate::dialogs::device_auth_dialog::DeviceAuthDialogState::new();
         self.device_auth_pending = None;
         self.pending_mcp_panel_auth = None;
         self.model_picker_fetch_pending = false;

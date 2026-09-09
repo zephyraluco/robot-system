@@ -328,7 +328,7 @@ impl App {
                 self.session_list_rx = Some(rx);
                 tokio::spawn(async move {
                     let sessions = claurst_core::history::list_sessions().await;
-                    let entries: Vec<crate::session_browser::SessionEntry> = sessions
+                    let entries: Vec<crate::dialogs::session_browser::SessionEntry> = sessions
                         .into_iter()
                         .map(|s| {
                             let age = chrono::Utc::now()
@@ -342,7 +342,7 @@ impl App {
                             } else {
                                 format!("{}d ago", age.num_days())
                             };
-                            crate::session_browser::SessionEntry {
+                            crate::dialogs::session_browser::SessionEntry {
                                 id: s.id,
                                 title: s.title.unwrap_or_else(|| "(untitled)".to_string()),
                                 last_updated,

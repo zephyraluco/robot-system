@@ -1,15 +1,15 @@
 // memory_file_selector.rs — Memory file selector overlay mirroring TS MemoryFileSelector.tsx
+// Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
-use ratatui::buffer::Buffer;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
-use crate::overlays::{
-    centered_rect, render_dark_overlay_buf, render_dialog_bg_buf, CLAURST_ACCENT, CLAURST_MUTED,
-    CLAURST_PANEL_BG, CLAURST_TEXT,
-};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{ModalLayout, CLAURST_ACCENT, CLAURST_MUTED, CLAURST_PANEL_BG, CLAURST_TEXT};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,7 +30,8 @@ pub struct MemoryFile {
 }
 
 pub struct MemoryFileSelectorState {
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     pub files: Vec<MemoryFile>,
     pub selected: usize,
     pub project_root: std::path::PathBuf,
@@ -43,7 +44,7 @@ pub struct MemoryFileSelectorState {
 impl MemoryFileSelectorState {
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Memory", 70, 8),
             files: Vec::new(),
             selected: 0,
             project_root: std::path::PathBuf::new(),
@@ -99,11 +100,17 @@ impl MemoryFileSelectorState {
             file_type: MemoryFileType::Local,
         });
 
-        self.visible = true;
+        // Height: 2 border + 1 blank + N files + 1 blank + 1 footer = N + 5
+        self.core.set_size(70, (self.files.len() as u16 + 6).max(8));
+        self.core.open();
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     pub fn select_prev(&mut self) {
@@ -138,90 +145,100 @@ impl Default for MemoryFileSelectorState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-/// Render the memory file selector as a centered floating dialog.
-pub fn render_memory_file_selector(
-    state: &MemoryFileSelectorState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
-    if !state.visible {
-        return;
+impl DialogBehavior for MemoryFileSelectorState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
     }
 
-    // Height: 2 border + 1 blank + N files + 1 blank + 1 footer = N + 5
-    let dialog_height = (state.files.len() as u16 + 6).max(8);
-    let dialog_area = centered_rect(70, dialog_height, area);
-    render_dark_overlay_buf(buf, area);
-    render_dialog_bg_buf(buf, dialog_area);
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
 
-    let inner = Rect {
-        x: dialog_area.x + 2,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(4),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled(" Memory", Style::default().fg(CLAURST_ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(" — choose a file", Style::default().fg(CLAURST_MUTED)),
-        Span::styled(
-            format!("{:>width$}", "Esc close", width = inner.width.saturating_sub(24) as usize),
-            Style::default().fg(CLAURST_MUTED),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
-    for (i, file) in state.files.iter().enumerate() {
-        let type_label = match file.file_type {
-            MemoryFileType::User => "User    ",
-            MemoryFileType::Project => "Project ",
-            MemoryFileType::Local => "Local   ",
-        };
-
-        let new_tag = if !file.exists {
-            Span::styled(" (new)", Style::default().fg(CLAURST_MUTED))
-        } else {
-            Span::raw("")
-        };
-
-        if i == state.selected {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    pad_line(&format!("  \u{203a} {type_label} {}", file.display_path), inner.width),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(CLAURST_ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {type_label} {}", file.display_path),
-                    Style::default().fg(CLAURST_TEXT),
-                ),
-                new_tag,
-            ]));
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Up => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => {
+                // Selection acknowledged — consumer can read selected_path()
+                self.close();
+                DialogOutcome::Confirmed
+            }
+            _ => DialogOutcome::Ignored,
         }
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        "  \u{2191}\u{2193} navigate  Enter select  Esc close",
-        Style::default().fg(CLAURST_MUTED),
-    )]));
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        let inner = Rect {
+            x: layout.body_area.x,
+            y: layout.body_area.y,
+            width: layout.body_area.width,
+            height: layout.body_area.height,
+        };
 
-    let para = Paragraph::new(lines)
-        .style(Style::default().bg(CLAURST_PANEL_BG).fg(CLAURST_TEXT))
-        .alignment(Alignment::Left);
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(" Memory", Style::default().fg(CLAURST_ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" — choose a file", Style::default().fg(CLAURST_MUTED)),
+            Span::styled(
+                format!("{:>width$}", "Esc close", width = inner.width.saturating_sub(24) as usize),
+                Style::default().fg(CLAURST_MUTED),
+            ),
+        ]));
+        lines.push(Line::from(""));
 
-    use ratatui::widgets::Widget;
-    para.render(inner, buf);
+        for (i, file) in self.files.iter().enumerate() {
+            let type_label = match file.file_type {
+                MemoryFileType::User => "User    ",
+                MemoryFileType::Project => "Project ",
+                MemoryFileType::Local => "Local   ",
+            };
+
+            let new_tag = if !file.exists {
+                Span::styled(" (new)", Style::default().fg(CLAURST_MUTED))
+            } else {
+                Span::raw("")
+            };
+
+            if i == self.selected {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        pad_line(&format!("  \u{203a} {type_label} {}", file.display_path), inner.width),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(CLAURST_ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    {type_label} {}", file.display_path),
+                        Style::default().fg(CLAURST_TEXT),
+                    ),
+                    new_tag,
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "  \u{2191}\u{2193} navigate  Enter select  Esc close",
+            Style::default().fg(CLAURST_MUTED),
+        )]));
+
+        let para = Paragraph::new(lines)
+            .style(Style::default().bg(CLAURST_PANEL_BG).fg(CLAURST_TEXT))
+            .alignment(Alignment::Left);
+
+        use ratatui::widgets::Widget;
+        para.render(inner, frame.buffer_mut());
+    }
 }
 
 fn pad_line(text: &str, width: u16) -> String {

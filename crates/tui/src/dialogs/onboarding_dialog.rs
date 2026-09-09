@@ -4,15 +4,18 @@
 // - Shown once on first run (when Settings.has_completed_onboarding == false).
 // - Walks the user through a brief orientation: key bindings, model info, help.
 // - Dismissed by pressing Enter or Esc; sets has_completed_onboarding in settings.
+// Built on the shared `DialogCore` + `DialogBehavior` base (crate::dialogs::dialog).
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
-use crate::overlays::centered_rect;
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::{ModalLayout, CLAURST_PANEL_BG};
 
 // ---------------------------------------------------------------------------
 // State
@@ -30,33 +33,40 @@ pub enum OnboardingPage {
 }
 
 /// State for the first-launch onboarding dialog.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct OnboardingDialogState {
-    /// Whether the dialog is currently visible.
-    pub visible: bool,
+    /// Embedded generic dialog base (visibility, geometry, title).
+    pub core: DialogCore,
     /// Current page.
     pub page: OnboardingPage,
 }
 
 impl OnboardingDialogState {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            core: DialogCore::new("Welcome to Claurst", 72, 26),
+            page: OnboardingPage::ProviderSetup,
+        }
     }
 
     /// Show the normal onboarding (first-run with credentials already configured).
     pub fn show(&mut self) {
-        self.visible = true;
+        self.core.open();
         self.page = OnboardingPage::Welcome;
     }
 
     /// Show the provider setup page (no credentials configured).
     pub fn show_provider_setup(&mut self) {
-        self.visible = true;
+        self.core.open();
         self.page = OnboardingPage::ProviderSetup;
     }
 
     pub fn dismiss(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Advance to the next page; returns true if we've reached Done and should dismiss.
@@ -85,49 +95,51 @@ impl OnboardingDialogState {
     }
 }
 
+impl DialogBehavior for OnboardingDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            KeyCode::Enter | KeyCode::Right => {
+                if self.next_page() {
+                    self.core.close();
+                    DialogOutcome::Confirmed
+                } else {
+                    DialogOutcome::Handled
+                }
+            }
+            KeyCode::Left => {
+                self.prev_page();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
+        match self.page {
+            OnboardingPage::ProviderSetup => render_provider_setup_page(frame, layout.body_area),
+            OnboardingPage::Welcome => render_welcome_page(frame, layout.body_area),
+            OnboardingPage::KeyBindings => render_keybindings_page(frame, layout.body_area),
+            OnboardingPage::Done => {} // should not be visible
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-
-pub fn render_onboarding_dialog(
-    frame: &mut Frame,
-    state: &OnboardingDialogState,
-    area: Rect,
-) {
-    if !state.visible {
-        return;
-    }
-
-    let dialog_width = 72u16.min(area.width.saturating_sub(4));
-    let dialog_height = 26u16.min(area.height.saturating_sub(4));
-    let dialog_area = centered_rect(dialog_width, dialog_height, area);
-
-    frame.render_widget(Clear, dialog_area);
-
-    match state.page {
-        OnboardingPage::ProviderSetup => render_provider_setup_page(frame, dialog_area),
-        OnboardingPage::Welcome => render_welcome_page(frame, dialog_area),
-        OnboardingPage::KeyBindings => render_keybindings_page(frame, dialog_area),
-        OnboardingPage::Done => {} // should not be visible
-    }
-}
 
 fn render_provider_setup_page(frame: &mut Frame, area: Rect) {
     // Theme pink — matches the header and mascot
     let pink = Color::Rgb(233, 30, 99);
     let dim = Color::Rgb(100, 100, 100);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(vec![
-            Span::styled("─── ", Style::default().fg(pink)),
-            Span::styled(" Connect a Provider ", Style::default().fg(pink).add_modifier(Modifier::BOLD)),
-            Span::styled(" ───", Style::default().fg(pink)),
-        ]))
-        .border_style(Style::default().fg(pink));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
     let sep = "  ─────────────────────────────────────────────────";
 
@@ -220,24 +232,19 @@ fn render_provider_setup_page(frame: &mut Frame, area: Rect) {
 
     Paragraph::new(lines)
         .wrap(Wrap { trim: false })
-        .render(inner, frame.buffer_mut());
+        .render(area, frame.buffer_mut());
 }
 
 fn render_welcome_page(frame: &mut Frame, area: Rect) {
-    use crate::overlays::{render_dark_overlay, render_dialog_bg, CLAURST_PANEL_BG};
-
     let pink = Color::Rgb(233, 30, 99);
     let dim = Color::Rgb(90, 90, 90);
     let text = Color::Rgb(210, 210, 215);
 
-    render_dark_overlay(frame, area);
-    render_dialog_bg(frame, area);
-
     let inner = Rect {
-        x: area.x + 2,
-        y: area.y + 1,
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(2),
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
 
     let cmd_label = |slash: &str, desc: &str| -> Line<'static> {
@@ -301,20 +308,15 @@ fn render_welcome_page(frame: &mut Frame, area: Rect) {
 }
 
 fn render_keybindings_page(frame: &mut Frame, area: Rect) {
-    use crate::overlays::{render_dark_overlay, render_dialog_bg, CLAURST_PANEL_BG};
-
     let pink = Color::Rgb(233, 30, 99);
     let dim = Color::Rgb(90, 90, 90);
     let text = Color::Rgb(210, 210, 215);
 
-    render_dark_overlay(frame, area);
-    render_dialog_bg(frame, area);
-
     let inner = Rect {
-        x: area.x + 2,
-        y: area.y + 1,
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(2),
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
 
     let kb = |key: &str, desc: &str| -> Line<'static> {
@@ -389,7 +391,7 @@ mod tests {
         // The dialog starts hidden; the app calls show()/show_provider_setup()
         // to pick the entry page, so the default page is just the enum default
         // (ProviderSetup — the no-credentials path).
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert_eq!(state.page, OnboardingPage::ProviderSetup);
     }
 
@@ -397,7 +399,7 @@ mod tests {
     fn onboarding_show_sets_visible() {
         let mut state = OnboardingDialogState::new();
         state.show();
-        assert!(state.visible);
+        assert!(state.is_visible());
         assert_eq!(state.page, OnboardingPage::Welcome);
     }
 
@@ -423,11 +425,12 @@ mod tests {
 
     #[test]
     fn onboarding_renders_without_panic() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut state = OnboardingDialogState::new();
         state.show();
         terminal.draw(|frame| {
-            render_onboarding_dialog(frame, &state, frame.area());
+            state.render(frame, frame.area());
         }).unwrap();
         let content: String = terminal.backend().buffer().clone().content().iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
@@ -437,12 +440,13 @@ mod tests {
 
     #[test]
     fn onboarding_keybindings_page_renders() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut state = OnboardingDialogState::new();
         state.show();
         state.next_page();
         terminal.draw(|frame| {
-            render_onboarding_dialog(frame, &state, frame.area());
+            state.render(frame, frame.area());
         }).unwrap();
         let content: String = terminal.backend().buffer().clone().content().iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
@@ -452,11 +456,12 @@ mod tests {
 
     #[test]
     fn onboarding_hidden_renders_nothing() {
+        use crate::dialogs::dialog::DialogBehavior as _;
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let state = OnboardingDialogState::new(); // visible = false
         let before = terminal.backend().buffer().clone();
         terminal.draw(|frame| {
-            render_onboarding_dialog(frame, &state, frame.area());
+            state.render(frame, frame.area());
         }).unwrap();
         assert_eq!(terminal.backend().buffer().content(), before.content());
     }

@@ -2,9 +2,7 @@
 
 use claurst_core::keybindings::{KeyContext, KeybindingResult, ParsedKeystroke};
 use crate::agents_view::AgentsRoute;
-use crate::dialog::DialogBehavior as _;
-use crate::diff_viewer::DiffPane;
-use crate::export_dialog::ExportFormat;
+use crate::dialogs::dialog::DialogBehavior as _;
 use crate::notifications::NotificationKind;
 use crate::input::normalize_char_with_shift;
 use crate::overlays::HistorySearchOverlay;
@@ -238,78 +236,38 @@ impl App {
         // session exits immediately. Mirrors TS BypassPermissionsModeDialog.tsx.
         // Accepting is remembered in settings.json (skipDangerousModePermissionPrompt)
         // so the warning is shown once, not on every launch.
-        if self.bypass_permissions_dialog.visible {
-            match key.code {
-                KeyCode::Char('1') | KeyCode::Esc => {
-                    // "No, exit" — quit immediately
-                    self.should_exit = true;
-                }
-                KeyCode::Char('2') => {
-                    // "Yes, I accept" — dismiss and continue
-                    self.bypass_permissions_dialog.dismiss();
-                    let _ = Self::persist_bypass_permissions_accepted();
-                }
-                KeyCode::Up | KeyCode::Char('k') => self.bypass_permissions_dialog.select_prev(),
-                KeyCode::Down | KeyCode::Char('j') => self.bypass_permissions_dialog.select_next(),
-                KeyCode::Enter => {
-                    if self.bypass_permissions_dialog.is_accept_selected() {
-                        self.bypass_permissions_dialog.dismiss();
-                        let _ = Self::persist_bypass_permissions_accepted();
-                    } else {
-                        self.should_exit = true;
-                    }
-                }
-                _ => {}
+        if self.bypass_permissions_dialog.is_visible() {
+            let out = self.bypass_permissions_dialog.handle_key(key);
+            if out.is_confirmed() {
+                // "Yes, I accept" — dismiss and continue.
+                let _ = Self::persist_bypass_permissions_accepted();
+            } else if out.is_cancelled() {
+                // "No, exit" — quit immediately.
+                self.should_exit = true;
             }
             return false;
         }
 
         // File injection dialog: shown when oversized files are detected in @refs.
-        if self.file_injection_dialog.visible {
-            let is_directory_only = self.file_injection_dialog.is_directory_only();
-            match key.code {
-                KeyCode::Enter => {
-                    if is_directory_only {
-                        // Directories can't be injected; Enter = abort, restore input.
-                        if let Some(input) = self.file_injection_dialog.pending_input.clone() {
-                            self.set_prompt_text(input);
-                        }
-                        self.file_injection_dialog.dismiss();
-                    } else {
-                        // Enter = inject (Allow).
-                        self.file_injection_dialog.selected = 0;
-                        self.file_injection_dialog.confirm();
-                    }
+        if self.file_injection_dialog.is_visible() {
+            let out = self.file_injection_dialog.handle_key(key);
+            if out.is_cancelled() {
+                // Abort path (Esc, or Enter on directory-only): restore the
+                // stashed input to the prompt so the user can edit it.
+                if let Some(input) = self.file_injection_dialog.pending_input.clone() {
+                    self.set_prompt_text(input);
                 }
-                KeyCode::Esc => {
-                    // Esc = abort, restore input.
-                    if let Some(input) = self.file_injection_dialog.pending_input.clone() {
-                        self.set_prompt_text(input);
-                    }
-                    self.file_injection_dialog.dismiss();
-                }
-                _ => {}
             }
             return false;
         }
 
         // Onboarding dialog: shown on first launch, dismissed with Enter/→/Esc.
-        if self.onboarding_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.onboarding_dialog.dismiss();
-                }
-                KeyCode::Enter | KeyCode::Right => {
-                    if self.onboarding_dialog.next_page() {
-                        self.onboarding_dialog.dismiss();
-                        // Persist that onboarding is complete (best-effort).
-                        let _ = Self::persist_onboarding_complete();
-                    }
-                }
-                KeyCode::Left => {
-                    self.onboarding_dialog.prev_page();
-                }
-                _ => {}
+        if self.onboarding_dialog.is_visible() {
+            let out = self.onboarding_dialog.handle_key(key);
+            if out.is_confirmed() {
+                // Reached the final page — persist that onboarding is complete
+                // (best-effort).
+                let _ = Self::persist_onboarding_complete();
             }
             return false;
         }
@@ -346,7 +304,7 @@ impl App {
             let out = self.device_auth_dialog.handle_key(key);
             if out.is_close() {
                 if out.is_confirmed() {
-                    if let crate::device_auth_dialog::DeviceAuthStatus::Success(ref token) =
+                    if let crate::dialogs::device_auth_dialog::DeviceAuthStatus::Success(ref token) =
                         self.device_auth_dialog.status
                     {
                         let provider_id = self.device_auth_dialog.provider_id.clone();
@@ -391,85 +349,48 @@ impl App {
             return false;
         }
 
-        // API key input dialog (opened from /connect for key-based providers)
         // Ask-user question dialog (AskUserQuestion tool)
-        if self.ask_user_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.ask_user_dialog.dismiss();
-                }
-                KeyCode::Enter => {
-                    self.ask_user_dialog.confirm();
-                }
-                KeyCode::Up | KeyCode::BackTab => {
-                    self.ask_user_dialog.select_prev();
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.ask_user_dialog.select_next();
-                }
-                KeyCode::Char(c)
-                    if c.is_ascii_digit()
-                        && self.ask_user_dialog.options.is_some()
-                        && !self.ask_user_dialog.in_custom_input =>
-                {
-                    // Digit keys select an option by number ONLY when the user
-                    // is not already typing a custom answer.  Once in custom
-                    // mode, digits flow through to push_char like any other char.
-                    let n = (c as u8 - b'0') as usize;
-                    if n >= 1 {
-                        self.ask_user_dialog.select_by_number(n);
-                    }
-                }
-                KeyCode::Char(c) => {
-                    let c = self.shift_normalize(c, key.modifiers);
-                    self.ask_user_dialog.push_char(c);
-                }
-                KeyCode::Backspace => {
-                    self.ask_user_dialog.pop_char();
-                }
-                _ => {}
+        if self.ask_user_dialog.is_visible() {
+            let out = self.ask_user_dialog.handle_key(key);
+            if out.is_cancelled() {
+                // Esc — send an empty reply so the tool result signals
+                // "user dismissed".
+                self.ask_user_dialog.dismiss();
             }
             return false;
         }
 
-        if self.key_input_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.key_input_dialog.close();
-                }
-                KeyCode::Enter => {
-                    let provider_id = self.key_input_dialog.provider_id.clone();
-                    let provider_name = self.key_input_dialog.provider_name.clone();
-                    let api_key = self.key_input_dialog.take_key();
-                    if !api_key.is_empty() {
-                        self.auth_store.set(
-                            &provider_id,
-                            claurst_core::StoredCredential::ApiKey { key: api_key },
-                        );
-                        self.activate_provider(provider_id, provider_name, "Connected to");
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.key_input_dialog.backspace();
-                }
-                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
-                    if let Some(text) = crate::image_paste::read_clipboard_text() {
-                        if text.is_empty() {
-                            self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                        } else {
-                            for ch in text.chars() {
-                                self.key_input_dialog.insert_char(ch);
-                            }
-                        }
+        if self.key_input_dialog.is_visible() {
+            // Ctrl/Super+V paste stays app-level — it needs the notification
+            // system (terminals that don't emit Event::Paste).
+            if key.code == KeyCode::Char('v')
+                && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
+            {
+                if let Some(text) = crate::image_paste::read_clipboard_text() {
+                    if text.is_empty() {
+                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
                     } else {
-                        self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
+                        for ch in text.chars() {
+                            self.key_input_dialog.insert_char(ch);
+                        }
                     }
+                } else {
+                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
-                KeyCode::Char(c) => {
-                    let c = self.shift_normalize(c, key.modifiers);
-                    self.key_input_dialog.insert_char(c);
+                return false;
+            }
+            let out = self.key_input_dialog.handle_key(key);
+            if out.is_confirmed() {
+                let provider_id = self.key_input_dialog.provider_id.clone();
+                let provider_name = self.key_input_dialog.provider_name.clone();
+                let api_key = self.key_input_dialog.take_key();
+                if !api_key.is_empty() {
+                    self.auth_store.set(
+                        &provider_id,
+                        claurst_core::StoredCredential::ApiKey { key: api_key },
+                    );
+                    self.activate_provider(provider_id, provider_name, "Connected to");
                 }
-                _ => {}
             }
             return false;
         }
@@ -518,82 +439,57 @@ impl App {
         }
 
         // Custom provider dialog (URL + API key for OpenAI-compatible providers)
-        if self.custom_provider_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.custom_provider_dialog.close();
-                }
-                KeyCode::Tab | KeyCode::Down => {
-                    self.custom_provider_dialog.move_next_field();
-                }
-                KeyCode::Up => {
-                    self.custom_provider_dialog.move_prev_field();
-                }
-                KeyCode::Enter => {
-                    if self.custom_provider_dialog.can_submit() {
-                        let provider_id = self.custom_provider_dialog.provider_id.clone();
-                        let provider_name = self.custom_provider_dialog.provider_name.clone();
-                        let (base_url, api_key) = self.custom_provider_dialog.take_values();
-                        self.persist_custom_provider_base_url(&base_url);
-                        self.auth_store.set(
-                            &provider_id,
-                            claurst_core::StoredCredential::ApiKey { key: api_key },
-                        );
-                        self.activate_provider(provider_id, provider_name, "Connected to");
+        if self.custom_provider_dialog.is_visible() {
+            // Ctrl/Super+V paste stays app-level — it needs the notification
+            // system (terminals that don't emit Event::Paste).
+            if key.code == KeyCode::Char('v')
+                && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
+            {
+                if let Some(text) = crate::image_paste::read_clipboard_text() {
+                    if text.is_empty() {
+                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
                     } else {
-                        self.custom_provider_dialog.move_next_field();
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.custom_provider_dialog.backspace();
-                }
-                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER) => {
-                    // Paste clipboard text into the focused field (terminals
-                    // that don't emit Event::Paste, e.g. Windows Terminal).
-                    if let Some(text) = crate::image_paste::read_clipboard_text() {
-                        if text.is_empty() {
-                            self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                        } else {
-                            for ch in text.chars() {
-                                self.custom_provider_dialog.insert_char(ch);
-                            }
+                        for ch in text.chars() {
+                            self.custom_provider_dialog.insert_char(ch);
                         }
-                    } else {
-                        self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                     }
+                } else {
+                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
-                KeyCode::Char(c) => {
-                    let c = self.shift_normalize(c, key.modifiers);
-                    self.custom_provider_dialog.insert_char(c);
-                }
-                _ => {}
+                return false;
+            }
+            let out = self.custom_provider_dialog.handle_key(key);
+            if out.is_confirmed() {
+                let provider_id = self.custom_provider_dialog.provider_id.clone();
+                let provider_name = self.custom_provider_dialog.provider_name.clone();
+                let (base_url, api_key) = self.custom_provider_dialog.take_values();
+                self.persist_custom_provider_base_url(&base_url);
+                self.auth_store.set(
+                    &provider_id,
+                    claurst_core::StoredCredential::ApiKey { key: api_key },
+                );
+                self.activate_provider(provider_id, provider_name, "Connected to");
             }
             return false;
         }
 
         // Import-config preview dialog
-        if self.import_config_dialog.visible {
-            match key.code {
-                KeyCode::Esc => self.import_config_dialog.close(),
-                KeyCode::Enter => self.perform_import_config(),
-                _ => {}
+        if self.import_config_dialog.is_visible() {
+            let out = self.import_config_dialog.handle_key(key);
+            if out.is_confirmed() {
+                self.perform_import_config();
             }
             return false;
         }
 
         // Invalid-config dialog intercepts Enter/Esc to dismiss
-        if self.invalid_config_dialog.visible {
-            match key.code {
-                KeyCode::Enter | KeyCode::Esc => self.invalid_config_dialog.dismiss(),
-                KeyCode::Up => self.invalid_config_dialog.scroll_up(),
-                KeyCode::Down => self.invalid_config_dialog.scroll_down(20),
-                _ => {}
-            }
+        if self.invalid_config_dialog.is_visible() {
+            let _ = self.invalid_config_dialog.handle_key(key);
             return false;
         }
 
         // Model picker — routed through the generic DialogBehavior pipeline
-        // (crate::dialog): navigation, effort ←/→, filter typing and Esc are
+        // (crate::dialogs::dialog): navigation, effort ←/→, filter typing and Esc are
         // handled by the dialog itself; Enter returns Confirmed and the
         // confirmed model is consumed here.
         if self.model_picker.is_visible() {
@@ -630,48 +526,27 @@ impl App {
         }
 
         // Session branching overlay intercepts navigation and Esc
-        if self.session_branching.visible {
-            use crate::session_branching::BranchBrowserMode;
-            match self.session_branching.mode {
-                BranchBrowserMode::Browse => {
-                    match key.code {
-                        KeyCode::Esc => self.session_branching.cancel(),
-                        KeyCode::Up => self.session_branching.select_prev(),
-                        KeyCode::Down => self.session_branching.select_next(),
-                        KeyCode::Char('n') => self.session_branching.start_create_new(),
-                        KeyCode::Char('d') => self.session_branching.start_delete_confirm(),
-                        KeyCode::Enter => {
-                            if let Some(branch) = self.session_branching.selected_branch() {
-                                self.status_message = Some(format!("Switched to branch: {}", branch.name));
-                                self.session_branching.close();
-                            }
+        if self.session_branching.is_visible() {
+            let out = self.session_branching.handle_key(key);
+            if out.is_confirmed() {
+                use crate::dialogs::session_branching::BranchBrowserMode;
+                match self.session_branching.mode {
+                    BranchBrowserMode::Browse => {
+                        if let Some(branch) = self.session_branching.selected_branch() {
+                            self.status_message = Some(format!("Switched to branch: {}", branch.name));
                         }
-                        _ => {}
+                        self.session_branching.close();
                     }
-                }
-                BranchBrowserMode::CreateNew => {
-                    match key.code {
-                        KeyCode::Esc => self.session_branching.cancel(),
-                        KeyCode::Enter => {
-                            if let Some((name, at_msg)) = self.session_branching.confirm_create_new() {
-                                self.status_message = Some(format!("Created branch: {} at message {}", name, at_msg));
-                                self.session_branching.close();
-                            }
+                    BranchBrowserMode::CreateNew => {
+                        if let Some((name, at_msg)) = self.session_branching.confirm_create_new() {
+                            self.status_message = Some(format!("Created branch: {} at message {}", name, at_msg));
+                            self.session_branching.close();
                         }
-                        KeyCode::Backspace => self.session_branching.pop_create_char(),
-                        KeyCode::Char(c) => self.session_branching.push_create_char(c),
-                        _ => {}
                     }
-                }
-                BranchBrowserMode::ConfirmDelete => {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Char('n') => self.session_branching.cancel(),
-                        KeyCode::Enter | KeyCode::Char('y') => {
-                            if let Some(branch_id) = self.session_branching.confirm_delete() {
-                                self.status_message = Some(format!("Deleted branch: {}", branch_id));
-                            }
+                    BranchBrowserMode::ConfirmDelete => {
+                        if let Some(branch_id) = self.session_branching.confirm_delete() {
+                            self.status_message = Some(format!("Deleted branch: {}", branch_id));
                         }
-                        _ => {}
                     }
                 }
             }
@@ -679,40 +554,22 @@ impl App {
         }
 
         // Session browser intercepts navigation and Esc
-        if self.session_browser.visible {
-            use crate::session_browser::SessionBrowserMode;
-            match self.session_browser.mode {
-                SessionBrowserMode::Browse => {
-                    match key.code {
-                        KeyCode::Esc => self.session_browser.close(),
-                        KeyCode::Up => self.session_browser.select_prev(),
-                        KeyCode::Down => self.session_browser.select_next(),
-                        KeyCode::Char('r') => self.session_browser.start_rename(),
-                        _ => {}
-                    }
-                }
-                SessionBrowserMode::Rename => {
-                    match key.code {
-                        KeyCode::Esc => self.session_browser.cancel(),
-                        KeyCode::Enter => {
-                            if let Some((_id, name)) = self.session_browser.confirm_rename() {
-                                self.session_title = Some(name.clone());
-                                self.status_message = Some(format!("Renamed to: {}", name));
-                            }
+        if self.session_browser.is_visible() {
+            let out = self.session_browser.handle_key(key);
+            if out.is_confirmed() {
+                use crate::dialogs::session_browser::SessionBrowserMode;
+                match self.session_browser.mode {
+                    SessionBrowserMode::Rename => {
+                        if let Some((_id, name)) = self.session_browser.confirm_rename() {
+                            self.session_title = Some(name.clone());
+                            self.status_message = Some(format!("Renamed to: {}", name));
                         }
-                        KeyCode::Backspace => self.session_browser.pop_rename_char(),
-                        KeyCode::Char(c) => self.session_browser.push_rename_char(c),
-                        _ => {}
+                        self.session_browser.close();
                     }
-                }
-                SessionBrowserMode::Confirm => {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Char('n') => self.session_browser.cancel(),
-                        KeyCode::Enter | KeyCode::Char('y') => {
-                            self.session_browser.close();
-                        }
-                        _ => {}
+                    SessionBrowserMode::Confirm => {
+                        self.session_browser.close();
                     }
+                    _ => {}
                 }
             }
             return false;
@@ -735,36 +592,22 @@ impl App {
         }
 
         // Export dialog key handling
-        if self.export_dialog.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.export_dialog.dismiss();
+        if self.export_dialog.is_visible() {
+            let out = self.export_dialog.handle_key(key);
+            if out.is_confirmed() {
+                if let Some(path) = self.perform_export() {
+                    self.push_notification(
+                        NotificationKind::Info,
+                        format!("Exported to {}", path),
+                        Some(4),
+                    );
+                } else {
+                    self.push_notification(
+                        NotificationKind::Warning,
+                        "Export failed: could not write file.".to_string(),
+                        Some(4),
+                    );
                 }
-                KeyCode::Enter => {
-                    if let Some(path) = self.perform_export() {
-                        self.push_notification(
-                            NotificationKind::Info,
-                            format!("Exported to {}", path),
-                            Some(4),
-                        );
-                    } else {
-                        self.push_notification(
-                            NotificationKind::Warning,
-                            "Export failed: could not write file.".to_string(),
-                            Some(4),
-                        );
-                    }
-                }
-                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                    self.export_dialog.toggle();
-                }
-                KeyCode::Char('1') => {
-                    self.export_dialog.selected = ExportFormat::Json;
-                }
-                KeyCode::Char('2') => {
-                    self.export_dialog.selected = ExportFormat::Markdown;
-                }
-                _ => {}
             }
             return false;
         }
@@ -789,32 +632,14 @@ impl App {
         }
 
         // Feedback survey intercepts digit keys and Esc
-        if self.feedback_survey.visible {
-            if key.code == KeyCode::Esc {
-                self.feedback_survey.close();
-                return false;
-            }
-            if let KeyCode::Char(c) = key.code {
-                if let Some(d) = c.to_digit(10) {
-                    self.feedback_survey.handle_digit(d as u8);
-                    return false;
-                }
-            }
+        if self.feedback_survey.is_visible() {
+            let _ = self.feedback_survey.handle_key(key);
             return false;
         }
 
         // Memory file selector intercepts navigation and Esc
-        if self.memory_file_selector.visible {
-            match key.code {
-                KeyCode::Esc => self.memory_file_selector.close(),
-                KeyCode::Up => self.memory_file_selector.select_prev(),
-                KeyCode::Down => self.memory_file_selector.select_next(),
-                KeyCode::Enter => {
-                    // Selection acknowledged — consumer can read selected_path()
-                    self.memory_file_selector.close();
-                }
-                _ => {}
-            }
+        if self.memory_file_selector.is_visible() {
+            let _ = self.memory_file_selector.handle_key(key);
             return false;
         }
 
@@ -835,8 +660,14 @@ impl App {
             return false;
         }
 
-        if self.diff_viewer.visible {
-            self.handle_diff_viewer_key(key);
+        if self.diff_viewer.is_visible() {
+            // 'd' toggles the diff scope and needs the project root (on App).
+            if key.code == KeyCode::Char('d') && key.modifiers.is_empty() {
+                let root = self.project_root();
+                self.diff_viewer.toggle_diff_type(&root);
+                return false;
+            }
+            let _ = self.diff_viewer.handle_key(key);
             return false;
         }
 
@@ -849,8 +680,8 @@ impl App {
             return self.handle_mcp_view_key(key);
         }
 
-        if self.stats_dialog.visible {
-            self.handle_stats_dialog_key(key);
+        if self.stats_dialog.is_visible() {
+            let _ = self.stats_dialog.handle_key(key);
             return false;
         }
 
@@ -927,26 +758,9 @@ impl App {
 
 
         // Desktop upsell startup dialog
-        if self.desktop_upsell.visible {
-            match key.code {
-                KeyCode::Up | KeyCode::BackTab => {
-                    self.desktop_upsell.select_prev();
-                    return false;
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.desktop_upsell.select_next();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    self.desktop_upsell.confirm();
-                    return false;
-                }
-                KeyCode::Esc => {
-                    self.desktop_upsell.dismiss_temporarily();
-                    return false;
-                }
-                _ => return false,
-            }
+        if self.desktop_upsell.is_visible() {
+            let _ = self.desktop_upsell.handle_key(key);
+            return false;
         }
 
         // Memory update notification dismiss
@@ -956,51 +770,13 @@ impl App {
         }
 
         // MCP elicitation dialog — highest priority modal
-        if self.elicitation.visible {
-            match key.code {
-                KeyCode::Esc => {
-                    self.elicitation.cancel();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    self.elicitation.submit();
-                    return false;
-                }
-                KeyCode::Tab | KeyCode::Down => {
-                    if let crossterm::event::KeyModifiers::SHIFT = key.modifiers {
-                        self.elicitation.prev_field();
-                    } else {
-                        self.elicitation.next_field();
-                    }
-                    return false;
-                }
-                KeyCode::BackTab | KeyCode::Up => {
-                    self.elicitation.prev_field();
-                    return false;
-                }
-                KeyCode::Left => {
-                    self.elicitation.cycle_enum_prev();
-                    return false;
-                }
-                KeyCode::Right => {
-                    self.elicitation.cycle_enum_next();
-                    return false;
-                }
-                KeyCode::Char(' ') => {
-                    self.elicitation.toggle_active();
-                    return false;
-                }
-                KeyCode::Backspace => {
-                    self.elicitation.backspace();
-                    return false;
-                }
-                KeyCode::Char(c) => {
-                    let c = self.shift_normalize(c, key.modifiers);
-                    self.elicitation.insert_char(c);
-                    return false;
-                }
-                _ => return false,
+        if self.elicitation.is_visible() {
+            let out = self.elicitation.handle_key(key);
+            if out.is_cancelled() {
+                // Esc — queue a Cancelled result so the caller can take_result().
+                self.elicitation.cancel();
             }
+            return false;
         }
 
         // ---- Keybinding processor (runs AFTER all dialog checks) ----------
@@ -1447,11 +1223,11 @@ impl App {
     }
 
     pub(super) fn current_key_context(&self) -> KeyContext {
-        if self.diff_viewer.visible {
+        if self.diff_viewer.is_visible() {
             KeyContext::DiffDialog
-        } else if self.agents_menu.visible || self.mcp_view.visible || self.stats_dialog.visible {
+        } else if self.agents_menu.visible || self.mcp_view.visible || self.stats_dialog.is_visible() {
             KeyContext::Select
-        } else if self.import_config_dialog.visible {
+        } else if self.import_config_dialog.is_visible() {
             KeyContext::Confirmation
         } else if self.settings_screen.visible {
             KeyContext::Settings
@@ -1469,18 +1245,6 @@ impl App {
             KeyContext::Help
         } else {
             KeyContext::Chat
-        }
-    }
-
-    pub(super) fn handle_stats_dialog_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.stats_dialog.close(),
-            KeyCode::Tab | KeyCode::Right => self.stats_dialog.next_tab(),
-            KeyCode::BackTab | KeyCode::Left => self.stats_dialog.prev_tab(),
-            KeyCode::Char('r') => self.stats_dialog.cycle_range(),
-            KeyCode::Up => self.stats_dialog.scroll = self.stats_dialog.scroll.saturating_sub(1),
-            KeyCode::Down => self.stats_dialog.scroll = self.stats_dialog.scroll.saturating_add(1),
-            _ => {}
         }
     }
 
@@ -1552,38 +1316,6 @@ impl App {
             KeyCode::Down => self.agents_menu.select_next(),
             KeyCode::Enter | KeyCode::Right => self.agents_menu.confirm_selection(),
             KeyCode::Left => self.agents_menu.go_back(),
-            _ => {}
-        }
-    }
-
-    pub(super) fn handle_diff_viewer_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.diff_viewer.close(),
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => self.diff_viewer.switch_pane(),
-            KeyCode::Char('d') => {
-                let root = self.project_root();
-                self.diff_viewer.toggle_diff_type(&root);
-            }
-            KeyCode::Up => {
-                if self.diff_viewer.active_pane == DiffPane::FileList {
-                    self.diff_viewer.select_prev();
-                } else {
-                    self.diff_viewer.scroll_detail_up();
-                }
-            }
-            KeyCode::Down => {
-                if self.diff_viewer.active_pane == DiffPane::FileList {
-                    self.diff_viewer.select_next();
-                } else {
-                    self.diff_viewer.scroll_detail_down();
-                }
-            }
-            KeyCode::PageUp => self.diff_viewer.scroll_detail_up(),
-            KeyCode::PageDown => self.diff_viewer.scroll_detail_down(),
-            KeyCode::Char(' ')
-                if self.diff_viewer.active_pane == DiffPane::FileList => {
-                    self.diff_viewer.toggle_file_collapse();
-                }
             _ => {}
         }
     }
@@ -2366,13 +2098,13 @@ impl App {
     /// `false` when no text dialog is open — callers MUST then swallow the
     /// paste if any modal is visible (it must never reach the main prompt).
     pub fn handle_dialog_paste(&mut self, data: &str) -> bool {
-        if self.custom_provider_dialog.visible {
+        if self.custom_provider_dialog.is_visible() {
             for ch in data.chars() {
                 self.custom_provider_dialog.insert_char(ch);
             }
             return true;
         }
-        if self.key_input_dialog.visible {
+        if self.key_input_dialog.is_visible() {
             for ch in data.chars() {
                 self.key_input_dialog.insert_char(ch);
             }
@@ -2384,13 +2116,13 @@ impl App {
             }
             return true;
         }
-        if self.ask_user_dialog.visible && self.ask_user_dialog.in_custom_input {
+        if self.ask_user_dialog.is_visible() && self.ask_user_dialog.in_custom_input {
             for ch in data.chars() {
                 self.ask_user_dialog.push_char(ch);
             }
             return true;
         }
-        if self.elicitation.visible {
+        if self.elicitation.is_visible() {
             for ch in data.chars() {
                 self.elicitation.insert_char(ch);
             }
@@ -2407,15 +2139,15 @@ impl App {
     pub(super) fn prompt_is_accepting_text(&self) -> bool {
         !self.is_streaming
             && self.permission_request.is_none()
-            && !self.ask_user_dialog.visible
+            && !self.ask_user_dialog.is_visible()
             && !self.history_search_overlay.visible
             && self.history_search.is_none()
             && !self.settings_screen.visible
             && !self.theme_screen.visible
-            && !self.custom_provider_dialog.visible
-            && !self.key_input_dialog.visible
+            && !self.custom_provider_dialog.is_visible()
+            && !self.key_input_dialog.is_visible()
             && !self.free_mode_dialog.is_visible()
-            && !self.elicitation.visible
+            && !self.elicitation.is_visible()
             && self.prompt_input.vim_mode == crate::prompt_input::VimMode::Insert
     }
 

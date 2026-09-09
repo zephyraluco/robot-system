@@ -4,32 +4,16 @@ use std::cell::RefCell;
 
 use crate::agents_view::render_agents_menu;
 use crate::context_viz::render_context_viz;
-use crate::export_dialog::render_export_dialog;
 use crate::app::{App, ContextMenuKind, SystemAnnotation, SystemMessageStyle, ToolStatus};
 use crate::rustle::rustle_lines;
-use crate::diff_viewer::render_diff_dialog;
-use crate::dialog::DialogBehavior as _;
-use crate::session_browser::render_session_browser;
-use crate::session_branching::render_session_branching;
+use crate::dialogs::dialog::DialogBehavior as _;
 use crate::tasks_overlay::render_tasks_overlay;
 use crate::dialogs::{render_mcp_approval_dialog, render_permission_dialog};
-use crate::feedback_survey::render_feedback_survey;
 use crate::overage_upsell::render_overage_upsell;
-use crate::desktop_upsell_startup::render_desktop_upsell_startup;
 use crate::memory_update_notification::render_memory_update_notification;
-use crate::import_config_dialog::render_import_config_dialog;
-use crate::invalid_config_dialog::render_invalid_config_dialog;
-use crate::bypass_permissions_dialog::render_bypass_permissions_dialog;
-use crate::file_injection_dialog::render_file_injection_dialog;
-use crate::ask_user_dialog::render_ask_user_dialog;
-use crate::onboarding_dialog::render_onboarding_dialog;
-use crate::key_input_dialog::render_key_input_dialog;
-use crate::custom_provider_dialog::render_custom_provider_dialog;
-use crate::elicitation_dialog::render_elicitation_dialog;
 use crate::figures;
 use crate::hooks_config_menu::render_hooks_config_menu;
 use crate::mcp_view::render_mcp_view;
-use crate::memory_file_selector::render_memory_file_selector;
 use crate::messages::{
     render_transcript_assistant_message_tagged,
     render_transcript_assistant_meta, render_transcript_live_text, render_transcript_user_message,
@@ -44,7 +28,6 @@ use crate::overlays::{
 use crate::plugin_views::render_plugin_hints;
 use crate::prompt_input::{InputMode, TypeaheadSource, VimMode, input_height, render_prompt_input};
 use crate::settings_screen::render_settings_screen;
-use crate::stats_dialog::render_stats_dialog;
 use crate::theme_screen::render_theme_screen;
 use crate::transcript_turn::{build_transcript_turns, TranscriptTurn};
 use crate::virtual_list::{VirtualItem, VirtualList};
@@ -673,8 +656,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         render_theme_screen(frame, &app.theme_screen, size);
     }
 
-    if app.stats_dialog.visible {
-        render_stats_dialog(&app.stats_dialog, size, frame.buffer_mut());
+    if app.stats_dialog.is_visible() {
+        app.stats_dialog.render(frame, size);
     }
 
     if app.mcp_view.visible {
@@ -685,9 +668,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         render_agents_menu(&app.agents_menu, size, frame.buffer_mut());
     }
 
-    if app.diff_viewer.visible {
-        let mut state = app.diff_viewer.clone();
-        render_diff_dialog(&mut state, size, frame.buffer_mut());
+    if app.diff_viewer.is_visible() {
+        app.diff_viewer.render(frame, size);
     }
 
     if app.paste_viewer.visible {
@@ -698,12 +680,12 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         render_global_search(&app.global_search, size, frame.buffer_mut());
     }
 
-    if app.feedback_survey.visible {
-        render_feedback_survey(&app.feedback_survey, size, frame.buffer_mut());
+    if app.feedback_survey.is_visible() {
+        app.feedback_survey.render(frame, size);
     }
 
-    if app.memory_file_selector.visible {
-        render_memory_file_selector(&app.memory_file_selector, size, frame.buffer_mut());
+    if app.memory_file_selector.is_visible() {
+        app.memory_file_selector.render(frame, size);
     }
 
     if app.hooks_config_menu.visible {
@@ -735,39 +717,39 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // Desktop upsell startup modal
-    if app.desktop_upsell.visible {
-        render_desktop_upsell_startup(&app.desktop_upsell, size, frame.buffer_mut());
+    if app.desktop_upsell.is_visible() {
+        app.desktop_upsell.render(frame, size);
     }
 
     // Import-config preview dialog
-    if app.import_config_dialog.visible {
-        render_import_config_dialog(frame, &app.import_config_dialog, size);
+    if app.import_config_dialog.is_visible() {
+        app.import_config_dialog.render(frame, size);
     }
 
     // Invalid config/settings dialog (shown when settings.json or AGENTS.md is malformed)
-    if app.invalid_config_dialog.visible {
-        render_invalid_config_dialog(frame, &app.invalid_config_dialog, size);
+    if app.invalid_config_dialog.is_visible() {
+        app.invalid_config_dialog.render(frame, size);
     }
 
     // Bypass-permissions confirmation dialog (topmost — rendered last so it sits above all)
-    if app.bypass_permissions_dialog.visible {
-        render_bypass_permissions_dialog(frame, &app.bypass_permissions_dialog, size);
+    if app.bypass_permissions_dialog.is_visible() {
+        app.bypass_permissions_dialog.render(frame, size);
     }
 
     // File injection warning dialog (shown when oversized/binary files detected)
-    if app.file_injection_dialog.visible {
-        render_file_injection_dialog(frame, &app.file_injection_dialog, size);
+    if app.file_injection_dialog.is_visible() {
+        app.file_injection_dialog.render(frame, size);
     }
 
     // AskUserQuestion dialog — renders above bypass-permissions so the model's
     // question is never obscured by the startup confirmation prompt.
-    if app.ask_user_dialog.visible {
-        render_ask_user_dialog(&app.ask_user_dialog, size, frame.buffer_mut());
+    if app.ask_user_dialog.is_visible() {
+        app.ask_user_dialog.render(frame, size);
     }
 
     // First-launch onboarding dialog (shown after bypass dialog, below elicitation)
-    if app.onboarding_dialog.visible {
-        render_onboarding_dialog(frame, &app.onboarding_dialog, size);
+    if app.onboarding_dialog.is_visible() {
+        app.onboarding_dialog.render(frame, size);
     }
 
     // The `/effort` selector is NOT an overlay — it docks into the prompt input
@@ -784,13 +766,13 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // API key input dialog (opened from /connect for key-based providers)
-    if app.key_input_dialog.visible {
-        render_key_input_dialog(frame, &app.key_input_dialog, size);
+    if app.key_input_dialog.is_visible() {
+        app.key_input_dialog.render(frame, size);
     }
 
     // Custom provider URL + API key dialog.
-    if app.custom_provider_dialog.visible {
-        render_custom_provider_dialog(frame, &app.custom_provider_dialog, size);
+    if app.custom_provider_dialog.is_visible() {
+        app.custom_provider_dialog.render(frame, size);
     }
 
     // "Free" composite-provider setup dialog (Zen + OpenRouter).
@@ -809,8 +791,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // MCP elicitation dialog (highest priority modal — rendered last to sit on top)
-    if app.elicitation.visible {
-        render_elicitation_dialog(&app.elicitation, size, frame.buffer_mut());
+    if app.elicitation.is_visible() {
+        app.elicitation.render(frame, size);
     }
 
     // Model picker overlay
@@ -819,18 +801,18 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // Session browser overlay
-    if app.session_browser.visible {
-        render_session_browser(&app.session_browser, size, frame.buffer_mut());
+    if app.session_browser.is_visible() {
+        app.session_browser.render(frame, size);
     }
 
     // Session branching overlay
-    if app.session_branching.visible {
-        render_session_branching(&app.session_branching, size, frame.buffer_mut());
+    if app.session_branching.is_visible() {
+        app.session_branching.render(frame, size);
     }
 
     // Export format picker dialog
-    if app.export_dialog.visible {
-        render_export_dialog(frame, &app.export_dialog, size);
+    if app.export_dialog.is_visible() {
+        app.export_dialog.render(frame, size);
     }
 
     // Context visualization overlay
@@ -3717,7 +3699,7 @@ mod stream_cache_tests {
 mod effort_dock_tests {
     use super::*;
     use crate::app::App;
-    use crate::model_picker::EffortLevel;
+    use crate::dialogs::model_picker::EffortLevel;
     use claurst_core::config::Config;
     use claurst_core::cost::CostTracker;
     use ratatui::{backend::TestBackend, Terminal};
