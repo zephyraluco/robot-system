@@ -32,6 +32,12 @@ pub struct InvalidConfigDialogState {
     pub scroll: u16,
 }
 
+impl Default for InvalidConfigDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What kind of configuration is broken.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidConfigKind {

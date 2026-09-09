@@ -70,6 +70,12 @@ pub struct DesktopUpsellStartupState {
     dismissed: bool,
 }
 
+impl Default for DesktopUpsellStartupState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DesktopUpsellStartupState {
     pub fn new() -> Self {
         Self {

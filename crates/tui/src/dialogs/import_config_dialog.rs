@@ -17,6 +17,12 @@ pub struct ImportConfigDialogState {
     pub preview: Option<ImportPreview>,
 }
 
+impl Default for ImportConfigDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImportConfigDialogState {
     pub fn new() -> Self {
         Self {

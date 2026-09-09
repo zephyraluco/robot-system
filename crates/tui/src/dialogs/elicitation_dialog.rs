@@ -183,6 +183,12 @@ pub struct ElicitationDialogState {
     result: Option<ElicitationResult>,
 }
 
+impl Default for ElicitationDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ElicitationDialogState {
     pub fn new() -> Self {
         Self {

@@ -29,6 +29,12 @@ pub struct BypassPermissionsDialogState {
     pub selected: usize,
 }
 
+impl Default for BypassPermissionsDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BypassPermissionsDialogState {
     pub fn new() -> Self {
         Self {
@@ -109,47 +115,6 @@ impl DialogBehavior for BypassPermissionsDialogState {
     }
 
     fn render_content(&self, frame: &mut Frame, layout: &ModalLayout) {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-
-        // Body text (matches TS dialog copy)
-        lines.push(Line::from(vec![Span::styled(
-            "Claurst running in Bypass Permissions mode",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "In Bypass Permissions mode, Claurst will NOT ask for your",
-            Style::default().fg(Color::White),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "approval before running potentially dangerous commands.",
-            Style::default().fg(Color::White),
-        )]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "This mode should only be used in a sandboxed container or VM",
-            Style::default().fg(Color::DarkGray),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "that has restricted internet access and can easily be restored",
-            Style::default().fg(Color::DarkGray),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "if damaged.",
-            Style::default().fg(Color::DarkGray),
-        )]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "By proceeding, you accept all responsibility for actions taken",
-            Style::default().fg(Color::DarkGray),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "while running in Bypass Permissions mode.",
-            Style::default().fg(Color::DarkGray),
-        )]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(""));
-
         // Options
         let opt_no_style = if self.selected == 0 {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -162,18 +127,58 @@ impl DialogBehavior for BypassPermissionsDialogState {
             Style::default().fg(Color::Red)
         };
 
-        lines.push(Line::from(vec![
-            Span::styled("  [1] ", Style::default().fg(Color::DarkGray)),
-            Span::styled("No, exit", opt_no_style),
-            Span::raw("        "),
-            Span::styled("  [2] ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Yes, I accept", opt_yes_style),
-        ]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "  ↑↓ or 1/2 to select  ·  Enter to confirm",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-        )]));
+        // Body text (matches TS dialog copy)
+        let lines: Vec<Line<'static>> = vec![
+            Line::from(vec![Span::styled(
+                "Claurst running in Bypass Permissions mode",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "In Bypass Permissions mode, Claurst will NOT ask for your",
+                Style::default().fg(Color::White),
+            )]),
+            Line::from(vec![Span::styled(
+                "approval before running potentially dangerous commands.",
+                Style::default().fg(Color::White),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "This mode should only be used in a sandboxed container or VM",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(vec![Span::styled(
+                "that has restricted internet access and can easily be restored",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(vec![Span::styled(
+                "if damaged.",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "By proceeding, you accept all responsibility for actions taken",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(vec![Span::styled(
+                "while running in Bypass Permissions mode.",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  [1] ", Style::default().fg(Color::DarkGray)),
+                Span::styled("No, exit", opt_no_style),
+                Span::raw("        "),
+                Span::styled("  [2] ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Yes, I accept", opt_yes_style),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "  ↑↓ or 1/2 to select  ·  Enter to confirm",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            )]),
+        ];
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })

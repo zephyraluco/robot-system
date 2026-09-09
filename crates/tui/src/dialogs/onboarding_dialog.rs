@@ -41,6 +41,12 @@ pub struct OnboardingDialogState {
     pub page: OnboardingPage,
 }
 
+impl Default for OnboardingDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OnboardingDialogState {
     pub fn new() -> Self {
         Self {

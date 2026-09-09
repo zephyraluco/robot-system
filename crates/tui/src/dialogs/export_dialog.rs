@@ -31,6 +31,12 @@ pub struct ExportDialogState {
     pub selected: ExportFormat,
 }
 
+impl Default for ExportDialogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExportDialogState {
     pub fn new() -> Self {
         Self {
