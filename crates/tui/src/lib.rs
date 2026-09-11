@@ -91,11 +91,6 @@ pub mod overlays;
 pub mod bridge_state;
 /// Plugin hint/recommendation UI.
 pub mod plugin_views;
-/// Full-screen tabbed settings interface.
-pub mod settings_screen;
-/// Theme picker overlay.
-pub mod theme_screen;
-/// Color palette management for different themes and accessibility support.
 pub mod theme_colors;
 /// Read-only viewer for [Pasted text #N ...] placeholders.
 pub mod paste_viewer;
@@ -111,8 +106,6 @@ pub mod agents_view;
 pub mod mcp_view;
 /// Complete prompt input with vim mode, history, typeahead, and paste handling.
 pub mod prompt_input;
-/// Read-only hooks configuration browser.
-pub mod hooks_config_menu;
 /// Overage credit upsell banner (shown when user exceeds free-tier limit).
 pub mod overage_upsell;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
@@ -135,7 +128,7 @@ pub use notifications::NotificationKind;
 pub use input::{is_slash_command, parse_slash_command};
 pub use dialogs::feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResponse};
 pub use dialogs::memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
-pub use hooks_config_menu::{HooksConfigMenuState, HookEntry};
+pub use dialogs::hooks_config_menu::{HooksConfigMenuState, HookEntry};
 pub use overage_upsell::{OverageCreditUpsellState, render_overage_upsell};
 pub use dialogs::desktop_upsell_startup::{DesktopUpsellStartupState, DesktopUpsellSelection};
 pub use memory_update_notification::{MemoryUpdateNotificationState, render_memory_update_notification, get_relative_memory_path};

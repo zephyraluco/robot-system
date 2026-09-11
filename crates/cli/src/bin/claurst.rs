@@ -1788,6 +1788,7 @@ async fn run_interactive(
         render::render_app, restore_terminal, setup_terminal, App,
         dialogs::device_auth_dialog::DeviceAuthEvent,
     };
+    use claurst_tui::dialogs::dialog::DialogBehavior as _;
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -3035,10 +3036,18 @@ async fn run_interactive(
                         continue;
                     }
                     if let Some(pr) = app.permission_request.as_mut() {
-                        if claurst_tui::dialogs::handle_permission_key(pr, key) {
+                        // Routed through the dialog's DialogBehavior pipeline:
+                        // `Confirmed` = an option was chosen, `Cancelled` = Esc
+                        // (mapped to deny). Both dismiss the dialog.
+                        let out = pr.handle_key(key);
+                        if out.is_close() {
                             let tool_use_id = pr.tool_use_id.clone();
-                            let selected_option = pr.selected_option;
-                            let selected_key = pr.options.get(selected_option).map(|o| o.key);
+                            let cancelled = out.is_cancelled();
+                            let selected_key = if cancelled {
+                                Some('n')
+                            } else {
+                                pr.selected_key()
+                            };
                             let should_record_bash_prefix = selected_key == Some('P');
                             let selected_path = pending_permissions
                                 .lock()

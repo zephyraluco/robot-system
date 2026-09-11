@@ -45,10 +45,10 @@ use crate::overlays::{
 use crate::plugin_views::PluginHintBanner;
 use crate::prompt_input::PromptInputState;
 use crate::dialogs::session_browser::SessionBrowserState;
-use crate::settings_screen::SettingsScreen;
+use crate::dialogs::settings_screen::SettingsScreen;
 use crate::dialogs::stats_dialog::StatsDialogState;
 use crate::tasks_overlay::TasksOverlay;
-use crate::theme_screen::ThemeScreen;
+use crate::dialogs::theme_screen::ThemeScreen;
 use ratatui::style::Color;
 use commands::{PROMPT_SLASH_COMMANDS, help_overlay_entries};
 use providers::{import_config_picker_items, provider_picker_items};
@@ -290,7 +290,7 @@ pub struct App {
     /// Memory file selector overlay (AGENTS.md browser).
     pub memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState,
     /// Read-only hooks configuration browser.
-    pub hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState,
+    pub hooks_config_menu: crate::dialogs::hooks_config_menu::HooksConfigMenuState,
     /// Overage credit upsell banner.
     pub overage_upsell: crate::overage_upsell::OverageCreditUpsellState,
     /// Desktop app upsell startup dialog.
@@ -654,7 +654,7 @@ impl App {
             paste_viewer: crate::paste_viewer::PasteViewer::default(),
             feedback_survey: crate::dialogs::feedback_survey::FeedbackSurveyState::new(),
             memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState::new(),
-            hooks_config_menu: crate::hooks_config_menu::HooksConfigMenuState::new(),
+            hooks_config_menu: crate::dialogs::hooks_config_menu::HooksConfigMenuState::new(),
             overage_upsell: crate::overage_upsell::OverageCreditUpsellState::new(),
             desktop_upsell: crate::dialogs::desktop_upsell_startup::DesktopUpsellStartupState::new(),
             invalid_config_dialog: crate::dialogs::invalid_config_dialog::InvalidConfigDialogState::new(),

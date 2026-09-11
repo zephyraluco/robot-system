@@ -623,9 +623,15 @@ impl App {
             return false;
         }
 
-        // MCP approval dialog
-        if self.mcp_approval.visible {
-            if let Some(choice) = crate::dialogs::handle_mcp_approval_key(&mut self.mcp_approval, key) {
+        // MCP approval dialog — routed through the generic DialogBehavior
+        // pipeline. Esc → Cancelled (deny); Enter / digit / n → Confirmed with
+        // the highlighted choice.
+        if self.mcp_approval.is_visible() {
+            let out = self.mcp_approval.handle_key(key);
+            if out.is_cancelled() {
+                self.handle_mcp_approval_decision(crate::dialogs::McpApprovalChoice::Deny);
+            } else if out.is_confirmed() {
+                let choice = self.mcp_approval.confirm();
                 self.handle_mcp_approval_decision(choice);
             }
             return false;
@@ -643,15 +649,11 @@ impl App {
             return false;
         }
 
-        // Hooks config menu intercepts navigation and Esc
-        if self.hooks_config_menu.visible {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.hooks_config_menu.back(),
-                KeyCode::Enter => self.hooks_config_menu.enter(),
-                KeyCode::Up | KeyCode::Char('k') => self.hooks_config_menu.select_prev(),
-                KeyCode::Down | KeyCode::Char('j') => self.hooks_config_menu.select_next(),
-                _ => {}
-            }
+        // Hooks config menu (drill-down browser) — routed through its
+        // DialogBehavior pipeline: Esc/q go back one level (closing only from
+        // the top-level event list), Enter drills in, ↑↓/jk select.
+        if self.hooks_config_menu.is_visible() {
+            let _ = self.hooks_config_menu.handle_key(key);
             return false;
         }
 
@@ -685,9 +687,11 @@ impl App {
             return false;
         }
 
-        // Settings screen intercepts keys
-        if self.settings_screen.visible {
-            crate::settings_screen::handle_settings_key(
+        // Settings screen intercepts keys. `handle_settings_key` adapts the
+        // screen's DialogBehavior pipeline and drains the pending `&mut Config`
+        // apply that the dialog itself cannot perform.
+        if self.settings_screen.is_visible() {
+            crate::dialogs::settings_screen::handle_settings_key(
                 &mut self.settings_screen,
                 &mut self.config,
                 key,
@@ -695,10 +699,11 @@ impl App {
             return false;
         }
 
-        // Theme picker intercepts keys
-        if self.theme_screen.visible {
+        // Theme picker intercepts keys; `handle_theme_key` adapts the picker's
+        // DialogBehavior pipeline and returns the confirmed theme name.
+        if self.theme_screen.is_visible() {
             if let Some(theme_name) =
-                crate::theme_screen::handle_theme_key(&mut self.theme_screen, key)
+                crate::dialogs::theme_screen::handle_theme_key(&mut self.theme_screen, key)
             {
                 self.apply_theme(&theme_name);
             }
@@ -1229,9 +1234,9 @@ impl App {
             KeyContext::Select
         } else if self.import_config_dialog.is_visible() {
             KeyContext::Confirmation
-        } else if self.settings_screen.visible {
+        } else if self.settings_screen.is_visible() {
             KeyContext::Settings
-        } else if self.theme_screen.visible {
+        } else if self.theme_screen.is_visible() {
             KeyContext::ThemePicker
         } else if self.rewind_flow.visible {
             KeyContext::Confirmation
@@ -1915,57 +1920,21 @@ impl App {
     }
 
     /// Handle a key event while a permission dialog is active.
+    ///
+    /// Routed through the dialog's `DialogBehavior` pipeline: `Confirmed`
+    /// means an option was chosen (record a bash prefix if applicable),
+    /// `Cancelled` means Esc (deny) — both dismiss the dialog.
     pub(super) fn handle_permission_key(&mut self, key: KeyEvent) {
-        let pr = match self.permission_request.as_mut() {
-            Some(p) => p,
+        let out = match self.permission_request.as_mut() {
+            Some(pr) => pr.handle_key(key),
             None => return,
         };
-
-        match key.code {
-            KeyCode::Char(c) => {
-                if let Some(digit) = c.to_digit(10) {
-                    let idx = (digit as usize).saturating_sub(1);
-                    if idx < pr.options.len() {
-                        pr.selected_option = idx;
-                    }
-                } else {
-                    // Check if any option matches this key.
-                    let mut matched_idx = None;
-                    for (i, opt) in pr.options.iter().enumerate() {
-                        if opt.key == c {
-                            matched_idx = Some(i);
-                            break;
-                        }
-                    }
-                    if let Some(idx) = matched_idx {
-                        pr.selected_option = idx;
-                        // If this is the prefix-allow option ('P'), record the prefix.
-                        self.maybe_record_bash_prefix();
-                        self.permission_request = None;
-                    }
-                }
-            }
-            KeyCode::Enter => {
-                // If the currently selected option is the prefix-allow option, record it.
-                self.maybe_record_bash_prefix();
-                self.permission_request = None;
-            }
-            KeyCode::Up => {
-                let pr = self.permission_request.as_mut().unwrap();
-                if pr.selected_option > 0 {
-                    pr.selected_option -= 1;
-                }
-            }
-            KeyCode::Down => {
-                let pr = self.permission_request.as_mut().unwrap();
-                if pr.selected_option + 1 < pr.options.len() {
-                    pr.selected_option += 1;
-                }
-            }
-            KeyCode::Esc => {
-                self.permission_request = None;
-            }
-            _ => {}
+        if out.is_confirmed() {
+            // If the selected option is the prefix-allow option ('P'), record it.
+            self.maybe_record_bash_prefix();
+            self.permission_request = None;
+        } else if out.is_cancelled() {
+            self.permission_request = None;
         }
     }
 
@@ -2142,8 +2111,8 @@ impl App {
             && !self.ask_user_dialog.is_visible()
             && !self.history_search_overlay.visible
             && self.history_search.is_none()
-            && !self.settings_screen.visible
-            && !self.theme_screen.visible
+            && !self.settings_screen.is_visible()
+            && !self.theme_screen.is_visible()
             && !self.custom_provider_dialog.is_visible()
             && !self.key_input_dialog.is_visible()
             && !self.free_mode_dialog.is_visible()

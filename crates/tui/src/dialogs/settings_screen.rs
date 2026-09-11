@@ -3,12 +3,20 @@
 // Opened by /config or /settings commands. Shows all editable settings
 // in a single scrollable list with live search filtering.
 // Changes are persisted via Settings::save_sync() or settings.json writes.
+//
+// Built on the shared `DialogCore` + `DialogBehavior` base
+// (`crate::dialogs::dialog`): the embedded `DialogCore` owns
+// visibility/geometry and the `DialogBehavior` dispatch pipeline captures every
+// keyboard and mouse event while the screen is open (so input never leaks to
+// the transcript underneath).
 
 use claurst_core::config::{Config, Settings};
 use claurst_core::output_styles::{builtin_styles, find_style};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::{
-    centered_rect, modal_search_line, render_dark_overlay, render_dialog_bg, CLAURST_ACCENT,
-    CLAURST_MUTED, CLAURST_PANEL_BG,
+    centered_rect, modal_search_line, render_dark_overlay, render_dialog_bg, ModalLayout,
+    CLAURST_ACCENT, CLAURST_MUTED, CLAURST_PANEL_BG,
 };
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -38,7 +46,9 @@ pub struct SettingsEntry {
 }
 
 pub struct SettingsScreen {
-    pub visible: bool,
+    /// Shared dialog base: visibility, geometry and the key/mouse capture
+    /// pipeline (modal — swallows every event while the screen is open).
+    pub core: DialogCore,
     pub search_query: String,
     pub selected_idx: usize,
     pub scroll_offset: usize,
@@ -50,6 +60,10 @@ pub struct SettingsScreen {
     pub settings_snapshot: Settings,
     /// Pending changes (field_name → new_value string).
     pub pending_changes: HashMap<String, String>,
+    /// Set when an edit was committed and must be applied to the app's live
+    /// `Config`. `on_key` has no `&mut Config`, so the adapter
+    /// (`handle_settings_key`) performs the apply/persist right after.
+    pending_config_apply: bool,
 
     // ---- Real settings fields ----
     pub auto_compact: bool,
@@ -78,7 +92,10 @@ impl SettingsScreen {
     pub fn new() -> Self {
         let settings_snapshot = Settings::load_sync().unwrap_or_default();
         let mut screen = Self {
-            visible: false,
+            // `dismiss_on_outside_click()` makes a left click on the dimmed mask
+            // outside the panel close the screen, matching every other modal
+            // dialog (see `App::dispatch_dialog_mouse`).
+            core: DialogCore::new("Settings", 80, 24).dismiss_on_outside_click(),
             search_query: String::new(),
             selected_idx: 0,
             scroll_offset: 0,
@@ -106,6 +123,7 @@ impl SettingsScreen {
             file_autocomplete_limit: "15".to_string(),
             file_autocomplete_show_hidden_files: false,
             file_injection_max_size: "100".to_string(),
+            pending_config_apply: false,
         };
         // Apply settings from snapshot immediately on initialization
         screen.apply_settings_from_snapshot();
@@ -149,16 +167,48 @@ impl SettingsScreen {
         self.search_query.clear();
         self.selected_idx = 0;
         self.scroll_offset = 0;
-        self.visible = true;
+        self.core.open();
 
         // Wire real settings from snapshot
         self.apply_settings_from_snapshot();
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
         self.edit_field = None;
         self.edit_value.clear();
+    }
+
+    /// Whether the settings screen is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
+
+    /// The settings visible under the current search filter (an owned copy, so
+    /// callers may mutate `self` while iterating the result).
+    fn filtered_entries(&self) -> Vec<SettingsEntry> {
+        let query = self.search_query.to_lowercase();
+        all_entries(self)
+            .into_iter()
+            .filter(|e| e.label.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// Number of rows currently visible under the search filter.
+    fn filtered_len(&self) -> usize {
+        self.filtered_entries().len()
+    }
+
+    /// Keep `scroll_offset` in sync with the selected row, using the body height
+    /// recorded by the last render (falls back to 10 rows before the first draw).
+    fn sync_scroll(&mut self) {
+        let recorded = self.core.layout().body_area.height as usize;
+        let visible_rows = if recorded == 0 { 10 } else { recorded };
+        if self.selected_idx < self.scroll_offset {
+            self.scroll_offset = self.selected_idx;
+        } else if self.selected_idx >= self.scroll_offset + visible_rows {
+            self.scroll_offset = self.selected_idx + 1 - visible_rows;
+        }
     }
 
     pub fn push_search_char(&mut self, c: char) {
@@ -249,6 +299,139 @@ impl SettingsScreen {
 impl Default for SettingsScreen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DialogBehavior — unified key/mouse capture pipeline
+// ---------------------------------------------------------------------------
+
+impl DialogBehavior for SettingsScreen {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    /// `Esc` has dialog-specific precedence, so it is handled here rather than
+    /// by the shared default (which would close unconditionally):
+    ///
+    /// 1. while editing a field → cancel the edit, stay open
+    /// 2. while a search filter is set → clear the filter, stay open
+    /// 3. otherwise → close (`Cancelled`)
+    fn on_escape(&mut self) -> DialogOutcome {
+        if self.edit_field.is_some() {
+            self.cancel_edit();
+            return DialogOutcome::Handled;
+        }
+        if !self.search_query.is_empty() {
+            self.search_query.clear();
+            self.selected_idx = 0;
+            self.scroll_offset = 0;
+            return DialogOutcome::Handled;
+        }
+        self.core.close();
+        DialogOutcome::Cancelled
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // ---- Field editing mode -------------------------------------------
+        if self.edit_field.is_some() {
+            return match key.code {
+                KeyCode::Enter => {
+                    self.commit_edit();
+                    // Applying the committed value needs the app's live `Config`
+                    // (`&mut Config`), which `on_key` cannot reach — flag it and
+                    // let the `handle_settings_key` adapter do it.
+                    self.pending_config_apply = true;
+                    DialogOutcome::Handled
+                }
+                KeyCode::Backspace => {
+                    self.edit_value.pop();
+                    DialogOutcome::Handled
+                }
+                KeyCode::Char(c) if key.modifiers.is_empty() => {
+                    self.edit_value.push(c);
+                    DialogOutcome::Handled
+                }
+                _ => DialogOutcome::Ignored,
+            };
+        }
+
+        // ---- Navigation / search mode -------------------------------------
+        match key.code {
+            KeyCode::Enter => {
+                toggle_or_cycle_current(self);
+                DialogOutcome::Handled
+            }
+            KeyCode::Up => {
+                self.select_prev();
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                let total = self.filtered_len();
+                self.select_next(total);
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            KeyCode::Backspace => {
+                self.pop_search_char();
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                self.push_search_char(c);
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                let total = self.filtered_len();
+                self.select_next(total);
+                self.sync_scroll();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Click-to-select: rows map 1:1 to filtered entries from the top
+                // of the body area, offset by the current scroll position.
+                let body = self.core.layout().body_area;
+                if body.height > 0
+                    && mouse.row >= body.y
+                    && mouse.row < body.y.saturating_add(body.height)
+                {
+                    let row = (mouse.row - body.y) as usize + self.scroll_offset;
+                    if row < self.filtered_len() {
+                        self.selected_idx = row;
+                    }
+                }
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    /// The settings panel is a large custom layout rather than the shared
+    /// centred modal frame, so the base chrome is bypassed here; the panel still
+    /// records its geometry into the `DialogCore` (from `render_settings_screen`)
+    /// so mouse hit-testing keeps working.
+    fn render(&self, frame: &mut Frame, screen_area: Rect) {
+        if !self.core.is_visible() {
+            return;
+        }
+        render_settings_screen(frame, self, screen_area);
     }
 }
 
@@ -425,7 +608,7 @@ fn all_entries(screen: &SettingsScreen) -> Vec<SettingsEntry> {
 // ---------------------------------------------------------------------------
 
 pub fn render_settings_screen(frame: &mut Frame, screen: &SettingsScreen, area: Rect) {
-    if !screen.visible {
+    if !screen.is_visible() {
         return;
     }
 
@@ -446,6 +629,15 @@ pub fn render_settings_screen(frame: &mut Frame, screen: &SettingsScreen, area: 
     };
 
     if inner.height < 6 {
+        // Too small to lay out — still record the panel so mouse hit-testing
+        // knows where the (blank) dialog is.
+        screen.core.set_layout(ModalLayout {
+            dialog_area: popup,
+            inner_area: inner,
+            header_area: Rect::default(),
+            body_area: Rect::default(),
+            footer_area: Rect::default(),
+        });
         return;
     }
 
@@ -468,6 +660,16 @@ pub fn render_settings_screen(frame: &mut Frame, screen: &SettingsScreen, area: 
     let description_area = layout[4];
     let footer_area = layout[5];
 
+    // Record the panel geometry so `DialogBehavior::handle_mouse` can hit-test
+    // (payload-free: `DialogCore::set_layout` takes `&self` via a `Cell`).
+    screen.core.set_layout(ModalLayout {
+        dialog_area: popup,
+        inner_area: inner,
+        header_area,
+        body_area: content_area,
+        footer_area,
+    });
+
     // Header
     let title = Line::from(vec![
         Span::styled(" Settings", Style::default().fg(CLAURST_ACCENT).add_modifier(Modifier::BOLD)),
@@ -487,10 +689,7 @@ pub fn render_settings_screen(frame: &mut Frame, screen: &SettingsScreen, area: 
     render_settings_list(frame, screen, content_area);
 
     // Description of selected entry
-    let all = all_entries(screen);
-    let filtered: Vec<_> = all.iter()
-        .filter(|e| e.label.to_lowercase().contains(&screen.search_query.to_lowercase()))
-        .collect();
+    let filtered = screen.filtered_entries();
 
     let desc_text = if let Some(entry) = filtered.get(screen.selected_idx) {
         // For Output Style, show current selection and all available options with descriptions
@@ -546,13 +745,8 @@ pub fn render_settings_screen(frame: &mut Frame, screen: &SettingsScreen, area: 
 }
 
 fn render_settings_list(frame: &mut Frame, screen: &SettingsScreen, area: Rect) {
-    let all = all_entries(screen);
-
-    // Filter entries by search query
-    let filtered: Vec<_> = all
-        .iter()
-        .filter(|e| e.label.to_lowercase().contains(&screen.search_query.to_lowercase()))
-        .collect();
+    // Entries visible under the current search filter.
+    let filtered = screen.filtered_entries();
 
     if filtered.is_empty() {
         let para = Paragraph::new("No settings match your search.").style(Style::default().fg(Color::DarkGray));
@@ -613,90 +807,27 @@ fn render_settings_list(frame: &mut Frame, screen: &SettingsScreen, area: Rect) 
 // Key handling
 // ---------------------------------------------------------------------------
 
+/// Drive one key event through the settings screen's `DialogBehavior`
+/// pipeline. `config` is only needed when a field edit was committed (the
+/// dialog itself cannot reach the app's live `Config`), so the pending apply is
+/// drained here right after the event is handled.
+///
+/// Returns `true` when the screen consumed the event.
 pub fn handle_settings_key(
     screen: &mut SettingsScreen,
     config: &mut Config,
     key: crossterm::event::KeyEvent,
 ) -> bool {
-    use crossterm::event::KeyCode;
-
-    if !screen.visible {
-        return false;
+    let out = screen.handle_key(key);
+    if screen.pending_config_apply {
+        screen.pending_config_apply = false;
+        screen.apply_and_save(config);
     }
-
-    // Editing mode
-    if screen.edit_field.is_some() {
-        match key.code {
-            KeyCode::Enter => {
-                screen.commit_edit();
-                screen.apply_and_save(config);
-            }
-            KeyCode::Esc => {
-                screen.cancel_edit();
-            }
-            KeyCode::Backspace => {
-                screen.edit_value.pop();
-            }
-            KeyCode::Char(c) => {
-                screen.edit_value.push(c);
-            }
-            _ => {}
-        }
-        return true;
-    }
-
-    // Navigation mode
-    match key.code {
-        KeyCode::Enter => {
-            toggle_or_cycle_current(screen);
-        }
-        KeyCode::Esc => {
-            if !screen.search_query.is_empty() {
-                screen.search_query.clear();
-                screen.selected_idx = 0;
-            } else {
-                screen.close();
-            }
-        }
-        KeyCode::Backspace => {
-            screen.pop_search_char();
-        }
-        KeyCode::Up => {
-            screen.select_prev();
-            update_scroll_offset_for_selection(screen);
-        }
-        KeyCode::Down => {
-            let all = all_entries(screen);
-            let filtered: Vec<_> = all
-                .iter()
-                .filter(|e| e.label.to_lowercase().contains(&screen.search_query.to_lowercase()))
-                .collect();
-            screen.select_next(filtered.len());
-            update_scroll_offset_for_selection(screen);
-        }
-        KeyCode::Char(c) => {
-            screen.push_search_char(c);
-        }
-        _ => {}
-    }
-    true
-}
-
-fn update_scroll_offset_for_selection(screen: &mut SettingsScreen) {
-    let visible_rows = 10; // Rough estimate, will be actual in real usage
-    if screen.selected_idx < screen.scroll_offset {
-        screen.scroll_offset = screen.selected_idx;
-    } else if screen.selected_idx >= screen.scroll_offset + visible_rows {
-        screen.scroll_offset = screen.selected_idx.saturating_sub(visible_rows - 1);
-    }
+    out.is_handled()
 }
 
 fn toggle_or_cycle_current(screen: &mut SettingsScreen) {
-    let all = all_entries(screen);
-    let filtered: Vec<_> = all
-        .iter()
-        .filter(|e| e.label.to_lowercase().contains(&screen.search_query.to_lowercase()))
-        .collect();
+    let filtered = screen.filtered_entries();
 
     if let Some(entry) = filtered.get(screen.selected_idx) {
         match entry.kind {
@@ -820,11 +951,153 @@ fn toggle_or_cycle_current(screen: &mut SettingsScreen) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
+
+    /// An opened screen with a synthetic layout recorded, so mouse hit-testing
+    /// behaves as if it had been rendered once.
+    fn opened() -> SettingsScreen {
+        let mut screen = SettingsScreen::new();
+        screen.open();
+        screen.core.set_layout(ModalLayout {
+            dialog_area: Rect::new(0, 0, 80, 24),
+            inner_area: Rect::new(2, 1, 76, 22),
+            header_area: Rect::new(2, 1, 76, 1),
+            body_area: Rect::new(2, 5, 76, 10),
+            footer_area: Rect::new(2, 23, 76, 1),
+        });
+        screen
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn new_screen_is_invisible_and_ignores_keys() {
+        let mut screen = SettingsScreen::new();
+        assert!(!screen.is_visible());
+        assert!(!screen.handle_key(key(KeyCode::Enter)).is_handled());
+    }
+
+    #[test]
+    fn esc_cancels_edit_then_clears_search_then_closes() {
+        let mut screen = opened();
+
+        // 1. while editing → Esc cancels the edit but keeps the screen open
+        screen.start_edit("max_tokens", "4096");
+        assert!(screen.handle_key(key(KeyCode::Esc)).is_handled());
+        assert!(screen.edit_field.is_none());
+        assert!(screen.is_visible());
+
+        // 2. while a search filter is set → Esc clears it, still open
+        screen.push_search_char('t');
+        assert!(screen.handle_key(key(KeyCode::Esc)).is_handled());
+        assert!(screen.search_query.is_empty());
+        assert!(screen.is_visible());
+
+        // 3. nothing pending → Esc closes the screen (Cancelled)
+        let out = screen.handle_key(key(KeyCode::Esc));
+        assert!(out.is_cancelled());
+        assert!(!screen.is_visible());
+    }
+
+    #[test]
+    fn typing_filters_the_settings_list() {
+        let mut screen = opened();
+        let total = screen.filtered_len();
+        screen.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(screen.search_query, "t");
+        assert_eq!(screen.selected_idx, 0);
+        assert!(screen.filtered_len() < total, "filter should narrow the list");
+        screen.handle_key(key(KeyCode::Backspace));
+        assert!(screen.search_query.is_empty());
+        assert_eq!(screen.filtered_len(), total);
+    }
+
+    #[test]
+    fn number_field_edit_commit_flags_pending_apply() {
+        let mut screen = opened();
+        // "Max Tokens" is always the first entry and is a numeric field.
+        screen.selected_idx = 0;
+        assert!(screen.handle_key(key(KeyCode::Enter)).is_handled());
+        assert_eq!(screen.edit_field.as_deref(), Some("max_tokens"));
+
+        screen.handle_key(key(KeyCode::Char('8')));
+        screen.handle_key(key(KeyCode::Enter));
+        assert!(screen.edit_field.is_none());
+        assert!(
+            screen.pending_config_apply,
+            "committing an edit must flag the adapter to apply it to Config"
+        );
+        assert!(screen.pending_changes.contains_key("max_tokens"));
+    }
+
+    #[test]
+    fn mouse_scroll_and_click_move_selection() {
+        let mut screen = opened();
+
+        assert!(screen
+            .handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 10,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            })
+            .is_handled());
+        assert_eq!(screen.selected_idx, 1);
+
+        assert!(screen
+            .handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 10,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            })
+            .is_handled());
+        assert_eq!(screen.selected_idx, 0);
+
+        // Click-to-select: body starts at row 5, so row 7 selects index 2.
+        screen.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(screen.selected_idx, 2);
+    }
+
+    #[test]
+    fn mouse_click_on_the_mask_closes_the_screen() {
+        let mut screen = opened();
+        // Left click far outside the recorded dialog area (the dimmed mask).
+        let out = screen.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 200,
+            row: 200,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(out.is_cancelled(), "mask click must close the screen");
+        assert!(!screen.is_visible());
+    }
+
+    #[test]
+    fn mouse_wheel_outside_the_panel_is_swallowed_while_modal() {
+        let mut screen = opened();
+        let out = screen.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 200,
+            row: 200,
+            modifiers: KeyModifiers::NONE,
+        });
+        // Modal capture: consumed without closing (only a click dismisses).
+        assert!(out.is_handled());
+        assert!(screen.is_visible());
+    }
 
     #[test]
     fn settings_screen_new_has_sensible_defaults() {
         let screen = SettingsScreen::new();
-        assert!(!screen.visible);
+        assert!(!screen.is_visible());
         assert!(screen.search_query.is_empty());
         assert_eq!(screen.selected_idx, 0);
         assert!(screen.edit_field.is_none());

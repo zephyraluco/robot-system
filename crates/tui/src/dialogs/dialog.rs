@@ -36,8 +36,9 @@
 // Event-capture contract
 // ----------------------
 // * Only visible dialogs handle events; invisible ones always return `Ignored`.
-// * Built-in keys: `Esc` closes the dialog (returns `Cancelled`), `Tab` /
-//   `Shift+Tab` cycle focus zones.
+// * Built-in keys: `Esc` closes the dialog (returns `Cancelled`; override
+//   [`DialogBehavior::on_escape`] when `Esc` needs to do something first),
+//   `Tab` / `Shift+Tab` cycle focus zones.
 // * Everything else is first offered to `DialogBehavior::on_key`.
 // * Modal dialogs (the default) capture EVERY key and mouse event while open —
 //   even ones their behaviour ignores — so the UI underneath never reacts.
@@ -128,10 +129,21 @@ pub trait DialogBehavior {
     }
 
     /// Handle a key event not consumed by the built-in defaults
-    /// (`Esc` closes, `Tab`/`Shift+Tab` cycle focus). Return `Ignored` if the
-    /// key is not relevant; modal dialogs capture it anyway.
+    /// (`Esc` → [`DialogBehavior::on_escape`], `Tab`/`Shift+Tab` cycle focus).
+    /// Return `Ignored` if the key is not relevant; modal dialogs capture it
+    /// anyway.
     fn on_key(&mut self, _key: KeyEvent) -> DialogOutcome {
         DialogOutcome::Ignored
+    }
+
+    /// Handle `Esc`. The default closes the dialog and returns `Cancelled`.
+    ///
+    /// Override when `Esc` has dialog-specific precedence — e.g. a screen that
+    /// first cancels an in-progress edit, or a drill-down browser that goes
+    /// back one level before closing. Return `Handled` to keep the dialog open.
+    fn on_escape(&mut self) -> DialogOutcome {
+        self.core().close();
+        DialogOutcome::Cancelled
     }
 
     /// Handle a mouse event whose cursor is inside the dialog area
@@ -159,8 +171,7 @@ pub trait DialogBehavior {
         // Built-in defaults first.
         match key.code {
             KeyCode::Esc => {
-                self.core().close();
-                return DialogOutcome::Cancelled;
+                return self.on_escape();
             }
             KeyCode::BackTab => {
                 let zones = self.focus_zones();
@@ -577,6 +588,35 @@ mod tests {
         let out = dlg.handle_key(key);
         assert_eq!(out, DialogOutcome::Cancelled);
         assert!(!dlg.core.is_visible());
+    }
+
+    #[test]
+    fn on_escape_override_can_keep_the_dialog_open() {
+        struct EscOverride {
+            core: DialogCore,
+            handled: bool,
+        }
+        impl DialogBehavior for EscOverride {
+            fn core(&mut self) -> &mut DialogCore {
+                &mut self.core
+            }
+            fn core_shared(&self) -> &DialogCore {
+                &self.core
+            }
+            fn on_escape(&mut self) -> DialogOutcome {
+                self.handled = true;
+                DialogOutcome::Handled
+            }
+        }
+        let mut dlg = EscOverride {
+            core: DialogCore::new("e", 40, 10),
+            handled: false,
+        };
+        dlg.core.open();
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(dlg.handle_key(key), DialogOutcome::Handled);
+        assert!(dlg.handled, "the override must be consulted");
+        assert!(dlg.core.is_visible(), "Handled keeps the dialog open");
     }
 
     #[test]

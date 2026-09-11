@@ -396,9 +396,40 @@ impl App {
             return;
         }
 
-        // Non-DialogCore overlays (settings screen, context viz, …) — legacy
-        // behavior: absorb clicks so they never reach the transcript.
-        if self.settings_screen.visible || self.context_viz.visible {
+        // Settings screen: DialogCore-based full-screen panel. The wheel and
+        // clicks inside go through its own pipeline (so the list scrolls); a
+        // left click on the dimmed mask outside the panel closes it, matching
+        // every other modal dialog. Nothing may reach the transcript underneath.
+        if self.settings_screen.is_visible() {
+            if self.settings_screen.handle_mouse(mouse_event).is_cancelled() {
+                self.close_secondary_views();
+                self.focus = FocusTarget::Input;
+            }
+            return;
+        }
+
+        // Theme picker and hooks browser: DialogCore-based modal overlays. Same
+        // contract as the settings screen — wheel / clicks go to the dialog, a
+        // mask click closes it. (Without this branch both overlays leaked mouse
+        // events to the transcript.)
+        if self.theme_screen.is_visible() {
+            if self.theme_screen.handle_mouse(mouse_event).is_cancelled() {
+                self.close_secondary_views();
+                self.focus = FocusTarget::Input;
+            }
+            return;
+        }
+        if self.hooks_config_menu.is_visible() {
+            if self.hooks_config_menu.handle_mouse(mouse_event).is_cancelled() {
+                self.close_secondary_views();
+                self.focus = FocusTarget::Input;
+            }
+            return;
+        }
+
+        // Non-DialogCore overlays (context viz, …) — legacy behavior: absorb
+        // clicks so they never reach the transcript.
+        if self.context_viz.visible {
             return;
         }
 
@@ -704,6 +735,20 @@ impl App {
         }
         if self.command_palette.is_visible() {
             route!(&mut self.command_palette);
+        }
+        // Permission request (Option-stored): modal — swallow every mouse
+        // event so nothing leaks to the transcript underneath. A stray click
+        // must never dismiss or deny a pending permission.
+        if self.permission_request.is_some() {
+            if let Some(pr) = self.permission_request.as_mut() {
+                let _ = pr.handle_mouse(mouse_event);
+            }
+            return true;
+        }
+        // MCP approval dialog: modal — swallow every mouse event.
+        if self.mcp_approval.is_visible() {
+            let _ = self.mcp_approval.handle_mouse(mouse_event);
+            return true;
         }
         false
     }

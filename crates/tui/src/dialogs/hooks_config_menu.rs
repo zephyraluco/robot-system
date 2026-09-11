@@ -8,13 +8,22 @@
 //
 // The menu is intentionally read-only; as in the TS original, users edit
 // ~/.claurst/settings.json directly or ask Claurst to change hooks.
+//
+// Built on the shared `DialogCore` + `DialogBehavior` base
+// (`crate::dialogs::dialog`): the embedded `DialogCore` owns visibility and
+// geometry, and the dispatch pipeline captures every keyboard and mouse event
+// while the browser is open. `Esc` / `q` drill back one level (via
+// `on_escape`) and close only from the top-level event list.
 
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::Frame;
 
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::{
     begin_modal_buf, modal_header_line_area, render_modal_title_buf, CLAURST_ACCENT,
     CLAURST_MUTED, CLAURST_PANEL_BG, CLAURST_TEXT,
@@ -76,7 +85,9 @@ pub enum HooksMenuMode {
 // ---------------------------------------------------------------------------
 
 pub struct HooksConfigMenuState {
-    pub visible: bool,
+    /// Shared dialog base: visibility, geometry and the key/mouse capture
+    /// pipeline (modal — swallows every event while the browser is open).
+    pub core: DialogCore,
     pub mode: HooksMenuMode,
     pub hooks: Vec<HookEntry>,
     /// All distinct event names (populated from `hooks`).
@@ -96,7 +107,10 @@ pub struct HooksConfigMenuState {
 impl HooksConfigMenuState {
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new("Hooks", 80, 28)
+                .header_height(2)
+                .footer_height(1)
+                .dismiss_on_outside_click(),
             mode: HooksMenuMode::SelectEvent,
             hooks: Vec::new(),
             events: Vec::new(),
@@ -105,6 +119,11 @@ impl HooksConfigMenuState {
             selected_event: None,
             selected_matcher: None,
         }
+    }
+
+    /// Whether the browser is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Open the menu at the event list, loading hooks from settings.
@@ -117,11 +136,23 @@ impl HooksConfigMenuState {
         self.hooks.clear();
         self.load_hooks();
         self.build_events();
-        self.visible = true;
+        self.core.open();
     }
 
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
+    }
+
+    /// `Esc` / `q` semantics: drill out one level, closing from the top level.
+    /// Returns `Cancelled` when the browser closed.
+    fn navigate_back(&mut self) -> DialogOutcome {
+        if self.mode == HooksMenuMode::SelectEvent {
+            self.core.close();
+            DialogOutcome::Cancelled
+        } else {
+            self.back();
+            DialogOutcome::Handled
+        }
     }
 
     /// Navigate into the selected item (Enter key).
@@ -337,6 +368,70 @@ impl Default for HooksConfigMenuState {
 }
 
 // ---------------------------------------------------------------------------
+// DialogBehavior — unified key/mouse capture pipeline
+// ---------------------------------------------------------------------------
+
+impl DialogBehavior for HooksConfigMenuState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    /// `Esc` drills out one navigation level and only closes from the top-level
+    /// event list (the shared default would close from any depth).
+    fn on_escape(&mut self) -> DialogOutcome {
+        self.navigate_back()
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        match key.code {
+            // `q` mirrors Esc (drill back / close) and may close the browser.
+            KeyCode::Char('q') => self.navigate_back(),
+            KeyCode::Enter => {
+                self.enter();
+                DialogOutcome::Handled
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    /// The browser draws its own 4-screen layout (via `begin_modal_buf`), so the
+    /// base chrome is bypassed and the render helper records the geometry for
+    /// mouse hit-testing instead.
+    fn render(&self, frame: &mut Frame, screen_area: Rect) {
+        if !self.core.is_visible() {
+            return;
+        }
+        render_hooks_config_menu(self, screen_area, frame.buffer_mut());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -345,9 +440,11 @@ pub fn render_hooks_config_menu(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    if !state.visible { return; }
+    if !state.is_visible() { return; }
 
     let layout = begin_modal_buf(buf, area, 80, 28, 2, 1);
+    // Record the geometry so `DialogBehavior::handle_mouse` can hit-test.
+    state.core.set_layout(layout);
     let inner_h = layout.body_area.height as usize;
 
     let (title, lines) = match state.mode {
@@ -544,12 +641,138 @@ fn push_detail_row(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::ModalLayout;
+    use crossterm::event::{KeyModifiers, MouseButton};
     use ratatui::layout::Rect;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+    }
+
+    /// An opened browser with one event → one matcher → one hook, plus a
+    /// synthetic layout so mouse hit-testing behaves as if rendered.
+    fn opened() -> HooksConfigMenuState {
+        let mut state = HooksConfigMenuState::new();
+        state.hooks = vec![
+            HookEntry {
+                event: "PreToolUse".to_string(),
+                matcher: "Bash".to_string(),
+                hook_type: "command".to_string(),
+                target: "echo hi".to_string(),
+            },
+            HookEntry {
+                event: "PreToolUse".to_string(),
+                matcher: "Write".to_string(),
+                hook_type: "command".to_string(),
+                target: "echo w".to_string(),
+            },
+        ];
+        state.events = vec!["PreToolUse".to_string()];
+        state.core.open();
+        state.core.set_layout(ModalLayout {
+            dialog_area: Rect::new(0, 0, 80, 28),
+            inner_area: Rect::new(1, 1, 78, 26),
+            header_area: Rect::new(1, 1, 78, 2),
+            body_area: Rect::new(1, 3, 78, 23),
+            footer_area: Rect::new(1, 26, 78, 1),
+        });
+        state
+    }
+
+    #[test]
+    fn invisible_browser_ignores_keys() {
+        let mut state = HooksConfigMenuState::new();
+        assert!(!state.is_visible());
+        assert!(!state.handle_key(key(KeyCode::Enter)).is_handled());
+    }
+
+    #[test]
+    fn esc_drills_back_one_level_then_closes() {
+        let mut state = opened();
+
+        // Level 1 → 2
+        assert!(state.handle_key(key(KeyCode::Enter)).is_handled());
+        assert_eq!(state.mode, HooksMenuMode::SelectMatcher);
+
+        // Esc drills back to the event list and keeps the browser open.
+        assert!(state.handle_key(key(KeyCode::Esc)).is_handled());
+        assert_eq!(state.mode, HooksMenuMode::SelectEvent);
+        assert!(state.is_visible());
+
+        // Esc at the top level closes it.
+        let out = state.handle_key(key(KeyCode::Esc));
+        assert!(out.is_cancelled());
+        assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn q_mirrors_esc() {
+        let mut state = opened();
+        state.handle_key(key(KeyCode::Enter)); // → SelectMatcher
+
+        assert!(state.handle_key(key(KeyCode::Char('q'))).is_handled());
+        assert_eq!(state.mode, HooksMenuMode::SelectEvent);
+        assert!(state.is_visible());
+
+        assert!(state.handle_key(key(KeyCode::Char('q'))).is_cancelled());
+        assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn full_drill_down_reaches_the_detail_view() {
+        let mut state = opened();
+        state.handle_key(key(KeyCode::Enter)); // → SelectMatcher
+        state.handle_key(key(KeyCode::Enter)); // → SelectHook
+        assert_eq!(state.mode, HooksMenuMode::SelectHook);
+        state.handle_key(key(KeyCode::Enter)); // → ViewHook
+        assert_eq!(state.mode, HooksMenuMode::ViewHook);
+
+        // Esc walks back up one level at a time.
+        state.handle_key(key(KeyCode::Esc));
+        assert_eq!(state.mode, HooksMenuMode::SelectHook);
+    }
+
+    #[test]
+    fn jk_and_arrows_move_the_selection() {
+        let mut state = opened();
+        state.handle_key(key(KeyCode::Enter)); // → SelectMatcher (Bash, Write)
+        assert_eq!(state.selected, 0);
+        state.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(state.selected, 1);
+        state.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(state.selected, 0);
+        state.handle_key(key(KeyCode::Down));
+        assert_eq!(state.selected, 1);
+        state.handle_key(key(KeyCode::Up));
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn mouse_wheel_moves_the_selection() {
+        let mut state = opened();
+        state.handle_key(key(KeyCode::Enter)); // → SelectMatcher
+        assert!(state.handle_mouse(mouse(MouseEventKind::ScrollDown, 10, 5)).is_handled());
+        assert_eq!(state.selected, 1);
+        assert!(state.handle_mouse(mouse(MouseEventKind::ScrollUp, 10, 5)).is_handled());
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn mask_click_closes_the_browser() {
+        let mut state = opened();
+        let out = state.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 200, 200));
+        assert!(out.is_cancelled());
+        assert!(!state.is_visible());
+    }
 
     #[test]
     fn hooks_menu_renders_opaque_event_list() {
         let mut state = HooksConfigMenuState::new();
-        state.visible = true;
+        state.core.open();
         state.hooks = vec![HookEntry {
             event: "PreToolUse".to_string(),
             matcher: "Bash".to_string(),

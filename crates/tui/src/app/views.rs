@@ -42,8 +42,8 @@ impl App {
             || self.show_help
             || self.history_search_overlay.visible
             || self.history_search.is_some()
-            || self.settings_screen.visible
-            || self.theme_screen.visible
+            || self.settings_screen.is_visible()
+            || self.theme_screen.is_visible()
             || self.stats_dialog.is_visible()
             || self.mcp_view.visible
             || self.agents_menu.visible
@@ -52,7 +52,7 @@ impl App {
             || self.global_search.visible
             || self.feedback_survey.is_visible()
             || self.memory_file_selector.is_visible()
-            || self.hooks_config_menu.visible
+            || self.hooks_config_menu.is_visible()
             || self.overage_upsell.visible
             || self.memory_update_notification.visible
             || self.desktop_upsell.is_visible()
@@ -75,7 +75,7 @@ impl App {
             || self.session_branching.is_visible()
             || self.export_dialog.is_visible()
             || self.context_viz.visible
-            || self.mcp_approval.visible
+            || self.mcp_approval.is_visible()
             || self.file_injection_dialog.is_visible()
             || self.context_menu_state.is_some()
     }
@@ -305,7 +305,7 @@ impl App {
     ///
     /// Called from the main loop. Returns `true` when a dialog was shown.
     pub fn maybe_prompt_next_mcp_server(&mut self) -> bool {
-        if self.mcp_approval.visible || self.mcp_prompting.is_some() {
+        if self.mcp_approval.is_visible() || self.mcp_prompting.is_some() {
             return false;
         }
         if let Some(server) = self.mcp_pending_project.pop_front() {

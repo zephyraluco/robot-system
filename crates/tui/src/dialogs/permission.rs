@@ -1,12 +1,22 @@
 // dialogs.rs — Permission dialogs and confirmation dialogs.
+//
+// All three dialogs in this module (`PermissionRequest`,
+// `ToolPermissionDialog`, `McpApprovalDialogState`) are built on the generic
+// dialog base (`DialogCore` + `DialogBehavior` in `crate::dialogs::dialog`):
+// the embedded `DialogCore` owns visibility/geometry and the `DialogBehavior`
+// dispatch pipeline (`handle_key` / `handle_mouse` / `render`) captures every
+// keyboard and mouse event while a dialog is open.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui::Frame;
+
+use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
+use crate::overlays::ModalLayout;
 
 // ---------------------------------------------------------------------------
 // Permission dialog kinds
@@ -65,6 +75,9 @@ pub struct PermissionRequest {
     pub kind: PermissionDialogKind,
     pub options: Vec<PermissionOption>,
     pub selected_option: usize,
+    /// Shared dialog base: visibility, geometry and the key/mouse capture
+    /// pipeline.
+    pub core: DialogCore,
 }
 
 impl PermissionRequest {
@@ -83,7 +96,9 @@ impl PermissionRequest {
             kind: PermissionDialogKind::Generic,
             selected_option: 0,
             options: Self::default_options(),
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     /// Build with a richer description derived from the full permission reason
@@ -109,7 +124,9 @@ impl PermissionRequest {
             kind: PermissionDialogKind::Generic,
             selected_option: 0,
             options: Self::default_options(),
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     /// Build a Bash-specific dialog, computing the options set based on whether
@@ -136,7 +153,9 @@ impl PermissionRequest {
             kind,
             selected_option: 0,
             options,
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     pub fn powershell(
@@ -154,7 +173,9 @@ impl PermissionRequest {
             kind: PermissionDialogKind::PowerShell { command },
             selected_option: 0,
             options: Self::default_options(),
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     /// Build a FileRead-specific dialog (4 options: once / session / persistent / deny).
@@ -182,7 +203,9 @@ impl PermissionRequest {
             kind,
             selected_option: 0,
             options: Self::file_read_options(),
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     /// Build a FileWrite-specific dialog (4 options: once / session / project / deny).
@@ -210,7 +233,9 @@ impl PermissionRequest {
             kind,
             selected_option: 0,
             options: Self::file_write_options(),
+            core: Self::new_core(),
         }
+        .finish()
     }
 
     // ------------------------------------------------------------------
@@ -260,6 +285,178 @@ impl PermissionRequest {
             PermissionOption { label: "Yes, always allow for this project".to_string(), key: 'p' },
             PermissionOption { label: "No, deny".to_string(), key: 'n' },
         ]
+    }
+
+    // ------------------------------------------------------------------
+    // DialogCore integration
+    // ------------------------------------------------------------------
+
+    /// Base dialog core for a permission request: no shared header/footer —
+    /// the dialog draws its own titled, colour-coded border box.
+    fn new_core() -> DialogCore {
+        DialogCore::new("", 80, 24)
+            .header_height(0)
+            .footer_height(0)
+    }
+
+    /// Finalize a freshly-built dialog: compute geometry, derive the title
+    /// from the kind, and make it visible. Constructors end with `.finish()`.
+    fn finish(mut self) -> Self {
+        self.refresh_size();
+        self.core.set_title(Self::title_for(&self.kind));
+        self.core.open();
+        self
+    }
+
+    /// Dialog title for a given kind (drawn in the base frame's header).
+    fn title_for(kind: &PermissionDialogKind) -> &'static str {
+        match kind {
+            PermissionDialogKind::FileRead { .. } => " File Read Permission ",
+            PermissionDialogKind::FileWrite { .. } => " File Write Permission ",
+            PermissionDialogKind::PowerShell { .. } => " PowerShell Permission ",
+            PermissionDialogKind::Bash { .. } | PermissionDialogKind::Generic => {
+                " Permission Required "
+            }
+        }
+    }
+
+    /// Recompute the requested dialog size from the current content. The base
+    /// frame clamps it to the terminal at render time; here it only drives the
+    /// backdrop rectangle and mouse hit-testing.
+    fn refresh_size(&mut self) {
+        let width = 80u16;
+        let text_width = (width as usize).saturating_sub(8);
+        let bash_lines = match &self.kind {
+            PermissionDialogKind::Bash { command, .. }
+            | PermissionDialogKind::PowerShell { command } => {
+                word_wrap(command, text_width.saturating_sub(4)).len() as u16
+            }
+            _ => 0,
+        };
+        let desc = if self.description.trim().is_empty() {
+            0
+        } else {
+            word_wrap(&self.description, text_width).len() as u16
+        };
+        let expl = if self.danger_explanation.is_empty() {
+            0
+        } else {
+            word_wrap(&self.danger_explanation, text_width).len() as u16 + 1
+        };
+        let preview = match &self.kind {
+            PermissionDialogKind::Bash { .. } | PermissionDialogKind::PowerShell { .. } => 0,
+            _ => u16::from(self.input_preview.is_some()) * 2,
+        };
+        let command_block = if bash_lines > 0 { bash_lines + 1 } else { 0 };
+        let content = 2 // tool header + blank
+            + command_block
+            + preview
+            + desc
+            + expl
+            + 1 // blank before options
+            + self.options.len() as u16;
+        self.core.set_size(width, content + 4);
+    }
+
+    /// The shortcut key of the currently selected option, if any.
+    pub fn selected_key(&self) -> Option<char> {
+        self.options.get(self.selected_option).map(|o| o.key)
+    }
+
+    /// Whether this permission request is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
+
+    /// Dismiss the request without an explicit choice (treated as deny).
+    pub fn close(&mut self) {
+        self.core.close();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DialogBehavior — unified key/mouse capture pipeline
+// ---------------------------------------------------------------------------
+
+impl DialogBehavior for PermissionRequest {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // Esc is consumed by the dispatch pipeline (→ Cancelled, i.e. deny)
+        // before this hook runs, so it is deliberately absent here.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.modifiers.contains(KeyModifiers::ALT)
+            || key.modifiers.contains(KeyModifiers::SUPER)
+        {
+            // Modified keys are shortcuts, not option choices; the modal
+            // capture still swallows them so they never reach the UI below.
+            return DialogOutcome::Handled;
+        }
+        match key.code {
+            KeyCode::Char(c) => {
+                if let Some(digit) = c.to_digit(10) {
+                    let idx = (digit as usize).saturating_sub(1);
+                    if idx < self.options.len() {
+                        self.selected_option = idx;
+                        return DialogOutcome::Confirmed;
+                    }
+                    // Out-of-range digit: swallow, stay open.
+                    return DialogOutcome::Handled;
+                }
+                for (i, opt) in self.options.iter().enumerate() {
+                    if opt.key == c {
+                        self.selected_option = i;
+                        return DialogOutcome::Confirmed;
+                    }
+                }
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => DialogOutcome::Confirmed,
+            KeyCode::Up => {
+                if self.selected_option > 0 {
+                    self.selected_option -= 1;
+                }
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                if self.selected_option + 1 < self.options.len() {
+                    self.selected_option += 1;
+                }
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if self.selected_option > 0 {
+                    self.selected_option -= 1;
+                }
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                if self.selected_option + 1 < self.options.len() {
+                    self.selected_option += 1;
+                }
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, _layout: &ModalLayout) {
+        // The permission dialog keeps its own titled, colour-coded border box;
+        // the base frame only supplies the dimmed modal backdrop.
+        let area = frame.area();
+        render_permission_dialog(frame, self, area);
     }
 }
 
@@ -624,59 +821,10 @@ pub fn render_permission_dialog(frame: &mut Frame, pr: &PermissionRequest, area:
 }
 
 // ---------------------------------------------------------------------------
-// Permission key handler
+// Permission key handling — provided by `DialogBehavior` (see above).
+// `handle_key` on a `PermissionRequest` returns `Confirmed` when an option is
+// chosen and `Cancelled` on Esc (deny); modal capture swallows everything else.
 // ---------------------------------------------------------------------------
-
-/// Handle a key event while a permission dialog is active.
-///
-/// Returns `true` if the dialog was confirmed/dismissed (caller should clear it).
-///
-/// Behaviour by option count:
-/// - 3-option dialog (FileRead): digits 1–3 valid, 4/5 rejected.
-/// - 4-option dialog (Generic / FileWrite / Bash without prefix): digits 1–4 valid.
-/// - 5-option dialog (Bash with prefix): digits 1–5 valid.
-pub fn handle_permission_key(pr: &mut PermissionRequest, key: KeyEvent) -> bool {
-    let option_count = pr.options.len();
-    match key.code {
-        KeyCode::Char(c) => {
-            if let Some(digit) = c.to_digit(10) {
-                let idx = (digit as usize).saturating_sub(1);
-                if idx < option_count {
-                    pr.selected_option = idx;
-                    return true; // confirmed via digit shortcut
-                }
-                // Reject digits beyond the option count silently.
-            } else {
-                for (i, opt) in pr.options.iter().enumerate() {
-                    if opt.key == c {
-                        pr.selected_option = i;
-                        return true;
-                    }
-                }
-            }
-        }
-        KeyCode::Enter => {
-            return true;
-        }
-        KeyCode::Up => {
-            if pr.selected_option > 0 {
-                pr.selected_option -= 1;
-            }
-        }
-        KeyCode::Down => {
-            if pr.selected_option + 1 < option_count {
-                pr.selected_option += 1;
-            }
-        }
-        KeyCode::Esc => {
-            // Move selection to the last option (deny) without confirming.
-            pr.selected_option = option_count.saturating_sub(1);
-            return true;
-        }
-        _ => {}
-    }
-    false
-}
 
 // ---------------------------------------------------------------------------
 // T2-6: Tool-specific permission request dialogs
@@ -727,6 +875,8 @@ pub enum ElicitationFieldType {
 /// State for a tool-specific permission dialog.
 #[derive(Debug, Clone)]
 pub struct ToolPermissionDialog {
+    /// Shared dialog base: visibility, geometry and the key/mouse pipeline.
+    pub core: DialogCore,
     /// What kind of dialog this is.
     pub kind: ToolPermissionKind,
     /// Currently focused button (0=Allow, 1=AlwaysAllow, 2=Deny).
@@ -739,7 +889,32 @@ pub struct ToolPermissionDialog {
 
 impl ToolPermissionDialog {
     pub fn new(kind: ToolPermissionKind) -> Self {
-        Self { kind, focused_button: 0, scroll: 0, focused_field: 0 }
+        let mut core = DialogCore::new("", 70, 20)
+            .header_height(0)
+            .footer_height(0);
+        core.open();
+        Self {
+            core,
+            kind,
+            focused_button: 0,
+            scroll: 0,
+            focused_field: 0,
+        }
+    }
+
+    /// Whether this dialog is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
+    }
+
+    /// Show the dialog.
+    pub fn open(&mut self) {
+        self.core.open();
+    }
+
+    /// Hide the dialog.
+    pub fn close(&mut self) {
+        self.core.close();
     }
 
     /// Move focus to next button.
@@ -758,6 +933,58 @@ impl ToolPermissionDialog {
 
     pub fn scroll_down(&mut self) {
         self.scroll += 1;
+    }
+}
+
+impl DialogBehavior for ToolPermissionDialog {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // Esc / Tab are consumed by the dispatch pipeline before this hook.
+        match key.code {
+            KeyCode::Left => {
+                self.prev_button();
+                DialogOutcome::Handled
+            }
+            KeyCode::Right => {
+                self.next_button();
+                DialogOutcome::Handled
+            }
+            KeyCode::Up => {
+                self.scroll_up();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down => {
+                self.scroll_down();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => DialogOutcome::Confirmed,
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.scroll_up();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_down();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, _layout: &ModalLayout) {
+        render_tool_permission_dialog(self, frame);
     }
 }
 
@@ -971,8 +1198,8 @@ impl McpApprovalChoice {
 /// State for the MCP server approval dialog.
 #[derive(Debug, Clone)]
 pub struct McpApprovalDialogState {
-    /// Whether the dialog is currently visible.
-    pub visible: bool,
+    /// Shared dialog base: visibility, geometry and the key/mouse pipeline.
+    pub core: DialogCore,
     /// Display name of the MCP server.
     pub server_name: String,
     /// Optional HTTP/WebSocket URL for the server.
@@ -989,13 +1216,20 @@ impl McpApprovalDialogState {
     /// Create a new, invisible state.
     pub fn new() -> Self {
         Self {
-            visible: false,
+            core: DialogCore::new(" MCP Server Connection ", 54, 12)
+                .header_height(0)
+                .footer_height(0),
             server_name: String::new(),
             server_url: None,
             server_command: None,
             tool_names: Vec::new(),
             selected: McpApprovalChoice::AllowSession,
         }
+    }
+
+    /// Whether the dialog is currently visible.
+    pub fn is_visible(&self) -> bool {
+        self.core.is_visible()
     }
 
     /// Populate and show the dialog.
@@ -1011,7 +1245,25 @@ impl McpApprovalDialogState {
         self.server_command = server_command.map(|s| s.to_string());
         self.tool_names = tool_names;
         self.selected = McpApprovalChoice::AllowSession;
-        self.visible = true;
+        self.refresh_size();
+        self.core.open();
+    }
+
+    /// Recompute the requested dialog size from the current content. It only
+    /// drives the backdrop rectangle / hit-testing; the dialog draws its own
+    /// titled border box.
+    fn refresh_size(&mut self) {
+        let tool_display_count = self.tool_names.len().min(5);
+        let has_tools = tool_display_count > 0;
+        let has_url_or_cmd = self.server_url.is_some() || self.server_command.is_some();
+        let content: u16 = 1 // blank after the top border
+            + 1 // "Server: ..."
+            + u16::from(has_url_or_cmd)
+            + 1 // blank
+            + if has_tools { 1 + tool_display_count as u16 + 1 } else { 0 }
+            + 3 // 3 option rows
+            + 1; // trailing blank
+        self.core.set_size(54, content + 4);
     }
 
     /// Move selection to the previous option (wraps around).
@@ -1037,13 +1289,76 @@ impl McpApprovalDialogState {
 
     /// Hide the dialog without returning a choice (treated as Deny by callers).
     pub fn close(&mut self) {
-        self.visible = false;
+        self.core.close();
     }
 }
 
 impl Default for McpApprovalDialogState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DialogBehavior for McpApprovalDialogState {
+    fn core(&mut self) -> &mut DialogCore {
+        &mut self.core
+    }
+
+    fn core_shared(&self) -> &DialogCore {
+        &self.core
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+        // Esc is consumed by the dispatch pipeline (→ Cancelled = deny).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.modifiers.contains(KeyModifiers::ALT)
+            || key.modifiers.contains(KeyModifiers::SUPER)
+        {
+            return DialogOutcome::Handled;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            KeyCode::Enter => DialogOutcome::Confirmed,
+            KeyCode::Char('1') => {
+                self.selected = McpApprovalChoice::AllowSession;
+                DialogOutcome::Confirmed
+            }
+            KeyCode::Char('2') => {
+                self.selected = McpApprovalChoice::AllowAlways;
+                DialogOutcome::Confirmed
+            }
+            KeyCode::Char('3') | KeyCode::Char('n') => {
+                self.selected = McpApprovalChoice::Deny;
+                DialogOutcome::Confirmed
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) -> DialogOutcome {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                DialogOutcome::Handled
+            }
+            MouseEventKind::ScrollDown => {
+                self.select_next();
+                DialogOutcome::Handled
+            }
+            _ => DialogOutcome::Ignored,
+        }
+    }
+
+    fn render_content(&self, frame: &mut Frame, _layout: &ModalLayout) {
+        let area = frame.area();
+        render_mcp_approval_dialog(self, area, frame.buffer_mut());
     }
 }
 
@@ -1075,7 +1390,7 @@ pub fn render_mcp_approval_dialog(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    if !state.visible {
+    if !state.is_visible() {
         return;
     }
 
@@ -1210,51 +1525,11 @@ pub fn render_mcp_approval_dialog(
 /// Render the MCP approval dialog using a `Frame` (convenience wrapper for
 /// the main render loop).
 pub fn render_mcp_approval_dialog_frame(state: &McpApprovalDialogState, frame: &mut Frame) {
-    if !state.visible {
+    if !state.is_visible() {
         return;
     }
     let area = frame.area();
     render_mcp_approval_dialog(state, area, frame.buffer_mut());
-}
-
-/// Handle a key event while the MCP approval dialog is open.
-///
-/// Returns `Some(choice)` when the user confirms (Enter or digit shortcut),
-/// or `Some(Deny)` when Esc is pressed.  Returns `None` for navigation keys.
-pub fn handle_mcp_approval_key(
-    state: &mut McpApprovalDialogState,
-    key: KeyEvent,
-) -> Option<McpApprovalChoice> {
-    match key.code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            state.select_prev();
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            state.select_next();
-            None
-        }
-        KeyCode::Enter => {
-            Some(state.confirm())
-        }
-        KeyCode::Char('1') => {
-            state.selected = McpApprovalChoice::AllowSession;
-            Some(state.confirm())
-        }
-        KeyCode::Char('2') => {
-            state.selected = McpApprovalChoice::AllowAlways;
-            Some(state.confirm())
-        }
-        KeyCode::Char('3') | KeyCode::Char('n') => {
-            state.selected = McpApprovalChoice::Deny;
-            Some(state.confirm())
-        }
-        KeyCode::Esc => {
-            state.close();
-            Some(McpApprovalChoice::Deny)
-        }
-        _ => None,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1510,8 +1785,8 @@ mod tests {
             "desc".to_string(),
         );
         // Press '1' → selects option 0 (allow once) and confirms.
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Char('1')));
-        assert!(confirmed);
+        let out = pr.handle_key(key(KeyCode::Char('1')));
+        assert!(out.is_confirmed());
         assert_eq!(pr.selected_option, 0);
     }
 
@@ -1525,11 +1800,11 @@ mod tests {
         );
         assert_eq!(pr.options.len(), 4);
         // Press '5' — out of range for a 4-option dialog, should NOT confirm.
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Char('5')));
-        assert!(!confirmed);
+        let out = pr.handle_key(key(KeyCode::Char('5')));
+        assert!(!out.is_confirmed());
         // Press '6' — also out of range.
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Char('6')));
-        assert!(!confirmed);
+        let out = pr.handle_key(key(KeyCode::Char('6')));
+        assert!(!out.is_confirmed());
     }
 
     #[test]
@@ -1543,8 +1818,8 @@ mod tests {
         );
         assert_eq!(pr.options.len(), 5);
         // '5' should select the 5th option (deny) and confirm.
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Char('5')));
-        assert!(confirmed);
+        let out = pr.handle_key(key(KeyCode::Char('5')));
+        assert!(out.is_confirmed());
         assert_eq!(pr.selected_option, 4);
     }
 
@@ -1556,22 +1831,24 @@ mod tests {
             "desc".to_string(),
         );
         // Press 'n' → deny (index 3).
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Char('n')));
-        assert!(confirmed);
+        let out = pr.handle_key(key(KeyCode::Char('n')));
+        assert!(out.is_confirmed());
         assert_eq!(pr.selected_option, 3);
     }
 
     #[test]
-    fn permission_key_esc_selects_deny() {
+    fn permission_key_esc_cancels_and_closes() {
         let mut pr = PermissionRequest::standard(
             "id".to_string(),
             "Bash".to_string(),
             "desc".to_string(),
         );
         pr.selected_option = 0;
-        let confirmed = handle_permission_key(&mut pr, key(KeyCode::Esc));
-        assert!(confirmed);
-        assert_eq!(pr.selected_option, pr.options.len() - 1);
+        let out = pr.handle_key(key(KeyCode::Esc));
+        // Esc is handled by the shared pipeline: it closes the dialog and
+        // returns `Cancelled`, which callers map to "deny".
+        assert!(out.is_cancelled());
+        assert!(!pr.is_visible());
     }
 
     #[test]
@@ -1583,14 +1860,14 @@ mod tests {
         );
         pr.selected_option = 1;
         // Down.
-        handle_permission_key(&mut pr, key(KeyCode::Down));
+        pr.handle_key(key(KeyCode::Down));
         assert_eq!(pr.selected_option, 2);
         // Up twice.
-        handle_permission_key(&mut pr, key(KeyCode::Up));
-        handle_permission_key(&mut pr, key(KeyCode::Up));
+        pr.handle_key(key(KeyCode::Up));
+        pr.handle_key(key(KeyCode::Up));
         assert_eq!(pr.selected_option, 0);
         // Up at top — should not underflow.
-        handle_permission_key(&mut pr, key(KeyCode::Up));
+        pr.handle_key(key(KeyCode::Up));
         assert_eq!(pr.selected_option, 0);
     }
 
@@ -1601,7 +1878,7 @@ mod tests {
     #[test]
     fn mcp_approval_new_is_invisible() {
         let state = McpApprovalDialogState::new();
-        assert!(!state.visible);
+        assert!(!state.is_visible());
         assert_eq!(state.selected, McpApprovalChoice::AllowSession);
     }
 
@@ -1614,7 +1891,7 @@ mod tests {
             None,
             vec!["tool_a".to_string(), "tool_b".to_string()],
         );
-        assert!(state.visible);
+        assert!(state.is_visible());
         assert_eq!(state.server_name, "my-server");
         assert_eq!(state.server_url.as_deref(), Some("wss://example.com/mcp"));
         assert_eq!(state.tool_names.len(), 2);
@@ -1643,7 +1920,7 @@ mod tests {
         state.select_next(); // AllowAlways
         let choice = state.confirm();
         assert_eq!(choice, McpApprovalChoice::AllowAlways);
-        assert!(!state.visible);
+        assert!(!state.is_visible());
     }
 
     #[test]
@@ -1651,18 +1928,20 @@ mod tests {
         let mut state = McpApprovalDialogState::new();
         state.show("s", None, None, vec![]);
         state.select_next(); // AllowAlways
-        let result = handle_mcp_approval_key(&mut state, key(KeyCode::Enter));
-        assert_eq!(result, Some(McpApprovalChoice::AllowAlways));
-        assert!(!state.visible);
+        let out = state.handle_key(key(KeyCode::Enter));
+        assert!(out.is_confirmed());
+        assert_eq!(state.confirm(), McpApprovalChoice::AllowAlways);
+        assert!(!state.is_visible());
     }
 
     #[test]
     fn mcp_approval_key_esc_denies() {
         let mut state = McpApprovalDialogState::new();
         state.show("s", None, None, vec![]);
-        let result = handle_mcp_approval_key(&mut state, key(KeyCode::Esc));
-        assert_eq!(result, Some(McpApprovalChoice::Deny));
-        assert!(!state.visible);
+        // Esc is handled by the shared pipeline → Cancelled (= deny).
+        let out = state.handle_key(key(KeyCode::Esc));
+        assert!(out.is_cancelled());
+        assert!(!state.is_visible());
     }
 
     #[test]
@@ -1670,37 +1949,37 @@ mod tests {
         // '1' → AllowSession
         let mut state = McpApprovalDialogState::new();
         state.show("s", None, None, vec![]);
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Char('1')));
-        assert_eq!(r, Some(McpApprovalChoice::AllowSession));
+        assert!(state.handle_key(key(KeyCode::Char('1'))).is_confirmed());
+        assert_eq!(state.confirm(), McpApprovalChoice::AllowSession);
 
         // '2' → AllowAlways
         state.show("s", None, None, vec![]);
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Char('2')));
-        assert_eq!(r, Some(McpApprovalChoice::AllowAlways));
+        assert!(state.handle_key(key(KeyCode::Char('2'))).is_confirmed());
+        assert_eq!(state.confirm(), McpApprovalChoice::AllowAlways);
 
         // '3' → Deny
         state.show("s", None, None, vec![]);
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Char('3')));
-        assert_eq!(r, Some(McpApprovalChoice::Deny));
+        assert!(state.handle_key(key(KeyCode::Char('3'))).is_confirmed());
+        assert_eq!(state.confirm(), McpApprovalChoice::Deny);
     }
 
     #[test]
     fn mcp_approval_key_n_denies() {
         let mut state = McpApprovalDialogState::new();
         state.show("s", None, None, vec![]);
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Char('n')));
-        assert_eq!(r, Some(McpApprovalChoice::Deny));
+        assert!(state.handle_key(key(KeyCode::Char('n'))).is_confirmed());
+        assert_eq!(state.confirm(), McpApprovalChoice::Deny);
     }
 
     #[test]
-    fn mcp_approval_key_navigation_returns_none() {
+    fn mcp_approval_key_navigation_stays_open() {
         let mut state = McpApprovalDialogState::new();
         state.show("s", None, None, vec![]);
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Down));
-        assert_eq!(r, None);
-        assert!(state.visible); // still open
-        let r = handle_mcp_approval_key(&mut state, key(KeyCode::Up));
-        assert_eq!(r, None);
+        let out = state.handle_key(key(KeyCode::Down));
+        assert!(!out.is_close());
+        assert!(state.is_visible()); // still open
+        let out = state.handle_key(key(KeyCode::Up));
+        assert!(!out.is_close());
     }
 
     #[test]

@@ -351,7 +351,6 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `rustle.rs` | 260 | Rustle 吉祥物（🦀）渲染 |
 | `figures.rs` | 29 | 图标/符号常量 |
 | `theme_colors.rs` | 212 | 主题调色板与无障碍支持 |
-| `theme_screen.rs` | 332 | 主题选择 overlay |
 | `osc8.rs` | 325 | 渲染后 OSC 8 超链接叠加 |
 | `kitty_image.rs` | 424 | Kitty 图形协议内联图片渲染（含文本回退） |
 | `image_paste.rs` | 508 | 剪贴板图片粘贴 + Ctrl+V |
@@ -365,8 +364,8 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 - **模型/effort**：`dialogs/model_picker.rs`(1585)、`effort_picker.rs`(1004)
 - **会话**：`dialogs/session_browser.rs`(605)、`dialogs/session_branching.rs`（Ctrl+B 分支）、`dialogs/export_dialog.rs`、`dialogs/memory_file_selector.rs`
 - **代码视图**：`dialogs/diff_viewer.rs`(1305，两栏 diff)、`paste_viewer.rs`
-- **系统状态**：`dialogs/stats_dialog.rs`(914)、`context_viz.rs`、`mcp_view.rs`(676)、`tasks_overlay.rs`、`agents_view.rs`(959)、`hooks_config_menu.rs`
-- **设置/引导**：`settings_screen.rs`(892)、`dialogs/onboarding_dialog.rs`、`dialogs/invalid_config_dialog.rs`、`dialogs/import_config_dialog.rs`
+- **系统状态**：`dialogs/stats_dialog.rs`(914)、`context_viz.rs`、`mcp_view.rs`(676)、`tasks_overlay.rs`、`agents_view.rs`(959)、`dialogs/hooks_config_menu.rs`（Hooks 只读浏览器）
+- **设置/引导**：`dialogs/settings_screen.rs`（全屏可搜索设置屏）、`dialogs/theme_screen.rs`（主题选择器）、`dialogs/onboarding_dialog.rs`、`dialogs/invalid_config_dialog.rs`、`dialogs/import_config_dialog.rs`
 - **认证/账户**：`dialogs/device_auth_dialog.rs`（设备码 OAuth）、`dialogs/key_input_dialog.rs`、`dialogs/custom_provider_dialog.rs`、`dialogs/free_mode_dialog.rs`
 - **通用控件**：`dialogs/dialog_select.rs`(621，可复用模糊搜索选择列表)、`dialogs/dialog.rs`（基座）
 - **通知/横幅**：`notifications.rs`、`dialogs/feedback_survey.rs`、`overage_upsell.rs`、`dialogs/desktop_upsell_startup.rs`、`memory_update_notification.rs`

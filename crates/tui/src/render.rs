@@ -8,11 +8,9 @@ use crate::app::{App, ContextMenuKind, SystemAnnotation, SystemMessageStyle, Too
 use crate::rustle::rustle_lines;
 use crate::dialogs::dialog::DialogBehavior as _;
 use crate::tasks_overlay::render_tasks_overlay;
-use crate::dialogs::{render_mcp_approval_dialog, render_permission_dialog};
 use crate::overage_upsell::render_overage_upsell;
 use crate::memory_update_notification::render_memory_update_notification;
 use crate::figures;
-use crate::hooks_config_menu::render_hooks_config_menu;
 use crate::mcp_view::render_mcp_view;
 use crate::messages::{
     render_transcript_assistant_message_tagged,
@@ -27,8 +25,6 @@ use crate::overlays::{
 };
 use crate::plugin_views::render_plugin_hints;
 use crate::prompt_input::{InputMode, TypeaheadSource, VimMode, input_height, render_prompt_input};
-use crate::settings_screen::render_settings_screen;
-use crate::theme_screen::render_theme_screen;
 use crate::transcript_turn::{build_transcript_turns, TranscriptTurn};
 use crate::virtual_list::{VirtualItem, VirtualList};
 use claurst_core::constants::APP_VERSION;
@@ -610,9 +606,9 @@ pub fn render_app(frame: &mut Frame, app: &App) {
 
     // Overlays (rendered on top in Z-order)
 
-    // Permission dialog (highest priority)
+    // Permission dialog (highest priority) — routed through DialogBehavior.
     if let Some(ref pr) = app.permission_request {
-        render_permission_dialog(frame, pr, size);
+        pr.render(frame, size);
     }
 
     // Rewind flow (takes over screen)
@@ -646,15 +642,12 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         render_legacy_history_search(frame, hs, app, size);
     }
 
-    // Settings screen (highest-priority full-screen overlay)
-    if app.settings_screen.visible {
-        render_settings_screen(frame, &app.settings_screen, size);
-    }
+    // Settings screen (highest-priority full-screen overlay) — routed through
+    // its DialogBehavior `render`.
+    app.settings_screen.render(frame, size);
 
-    // Theme picker overlay
-    if app.theme_screen.visible {
-        render_theme_screen(frame, &app.theme_screen, size);
-    }
+    // Theme picker overlay — routed through its DialogBehavior `render`.
+    app.theme_screen.render(frame, size);
 
     if app.stats_dialog.is_visible() {
         app.stats_dialog.render(frame, size);
@@ -688,9 +681,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         app.memory_file_selector.render(frame, size);
     }
 
-    if app.hooks_config_menu.visible {
-        render_hooks_config_menu(&app.hooks_config_menu, size, frame.buffer_mut());
-    }
+    // Hooks config menu — routed through its DialogBehavior `render`.
+    app.hooks_config_menu.render(frame, size);
 
     // Overage credit upsell banner
     if app.overage_upsell.visible {
@@ -829,9 +821,9 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         );
     }
 
-    // MCP approval dialog
-    if app.mcp_approval.visible {
-        render_mcp_approval_dialog(&app.mcp_approval, size, frame.buffer_mut());
+    // MCP approval dialog — routed through DialogBehavior.
+    if app.mcp_approval.is_visible() {
+        app.mcp_approval.render(frame, size);
     }
 
     // Always show error modals on top of everything (highest priority)
