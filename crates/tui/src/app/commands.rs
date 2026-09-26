@@ -104,6 +104,10 @@ impl App {
     }
 
     pub fn intercept_slash_command(&mut self, cmd: &str) -> bool {
+        // Running a command means the user moved on: clear a stale failure from
+        // the prompt corner (a command that fails pushes its own notification
+        // after this point).
+        self.notifications.dismiss_errors();
         self.close_secondary_views();
         match cmd {
             "config" | "settings" => {

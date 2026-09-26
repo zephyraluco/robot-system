@@ -712,6 +712,9 @@ impl App {
             } else if let Some(text) = read_clipboard_text().or_else(read_primary_text) {
                 self.handle_paste_data(text);
                 self.refresh_prompt_input();
+            } else {
+                // Nothing to paste — say so instead of silently ignoring Ctrl+V.
+                self.notify_warning("Clipboard is empty");
             }
             return false;
         }

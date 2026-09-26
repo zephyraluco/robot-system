@@ -35,6 +35,7 @@ use crate::dialogs::export_dialog::ExportDialogState;
 use crate::dialogs::import_config_dialog::ImportConfigDialogState;
 use crate::dialogs::model_picker::{EffortLevel, ModelPickerState};
 use crate::overlays::HelpOverlay;
+use crate::notifications::NotificationQueue;
 use crate::plugin_views::PluginHintBanner;
 use crate::prompt_input::PromptInputState;
 use crate::dialogs::session_browser::SessionBrowserState;
@@ -128,6 +129,10 @@ pub struct App {
     pub streaming_text: String,
     pub streaming_thinking: String,
     pub status_message: Option<String>,
+    /// Warnings / errors shown in the prompt box's top-right corner. Errors
+    /// persist until the next prompt is submitted, warnings expire on their own
+    /// (see `crate::notifications`).
+    pub notifications: NotificationQueue,
     /// Randomly chosen thinking verb shown next to the spinner while streaming.
     pub spinner_verb: Option<String>,
     pub should_exit: bool,
@@ -541,6 +546,7 @@ impl App {
             streaming_text: String::new(),
             streaming_thinking: String::new(),
             status_message: None,
+            notifications: NotificationQueue::new(),
             spinner_verb: None,
             should_exit: false,
             show_help: false,

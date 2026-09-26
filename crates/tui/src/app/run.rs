@@ -206,7 +206,11 @@ impl App {
                 }
                 self.invalidate_transcript();
                 if is_error {
-                    self.status_message = Some(format!("Tool error: {}", result));
+                    // The transcript keeps the full tool result, and the corner
+                    // carries the headline — repeating it in the dim status row
+                    // would just be a second copy of the same line.
+                    self.status_message = None;
+                    self.notify_error(format!("Tool error: {}", result));
                 } else {
                     self.status_message = None;
                 }
@@ -240,6 +244,12 @@ impl App {
             }
 
             QueryEvent::Status(msg) => {
+                // Status text doubles as a notification source: retries, budget
+                // stops and fallbacks belong in the prompt corner, while plain
+                // progress ("Compacting context...") stays in the status row.
+                if let Some(kind) = crate::notifications::NotificationKind::classify(&msg) {
+                    self.notify(kind, msg.clone());
+                }
                 self.status_message = Some(msg);
             }
 
@@ -250,9 +260,25 @@ impl App {
                 self.streaming_thinking.clear();
                 self.invalidate_transcript();
                 let err_msg = format!("Error: {}", msg);
+                self.notify_error(err_msg.clone());
                 self.push_assistant_message(err_msg);
             }
-            QueryEvent::TokenWarning { .. } => {}
+            QueryEvent::TokenWarning { state, pct_used } => {
+                // The footer already tracks context usage continuously; the
+                // corner only speaks up once the window is genuinely running
+                // out (≥80% = warning, ≥95% = error).
+                use claurst_query::TokenWarningState;
+                let pct = (pct_used * 100.0).round().clamp(0.0, 100.0) as u32;
+                match state {
+                    TokenWarningState::Warning => {
+                        self.notify_warning(format!("{}% context used", pct))
+                    }
+                    TokenWarningState::Critical => {
+                        self.notify_error(format!("{}% context used — run /compact", pct))
+                    }
+                    TokenWarningState::Ok => {}
+                }
+            }
         }
 
         // Update token count from tracker.
@@ -267,6 +293,8 @@ impl App {
     ) -> anyhow::Result<Option<String>> {
         loop {
             self.frame_count = self.frame_count.wrapping_add(1);
+            // Drop notifications whose lifetime elapsed (warnings fade out here).
+            self.notifications.tick();
 
             // Drain background session-list results.
             if let Some(ref mut rx) = self.session_list_rx {

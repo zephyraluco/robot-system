@@ -920,7 +920,7 @@ pub async fn run_query_loop(
                         use claurst_core::sample_spinner_verb;
                         let seed = provider_id_str.len() ^ model_id_str.len();
                         let verb = sample_spinner_verb(seed);
-                        let _ = tx.send(QueryEvent::Status(format!("✳ {}…", verb)));
+                        let _ = tx.send(QueryEvent::Status(format!("{}…", verb)));
                     }
 
                     // Build ProviderRequest from the already-assembled request data.

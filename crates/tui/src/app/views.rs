@@ -162,6 +162,12 @@ impl App {
                     let mut store = claurst_core::mcp_trust::McpTrustStore::load();
                     store.approve(&root, &server);
                     if let Err(e) = store.save() {
+                        // Partial success: the session is approved, only the
+                        // on-disk record failed — that is a warning, not an error.
+                        self.notify_warning(format!(
+                            "Approved '{}', but failed to persist trust: {}",
+                            server.name, e
+                        ));
                         self.status_message = Some(format!(
                             "Approved '{}', but failed to persist trust: {}",
                             server.name, e

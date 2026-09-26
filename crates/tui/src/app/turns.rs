@@ -41,6 +41,9 @@ impl App {
     }
 
     pub(super) fn begin_user_turn_snapshot(&mut self) {
+        // A new prompt supersedes the previous failure: clear the error from the
+        // prompt corner (warnings expire on their own).
+        self.notifications.dismiss_errors();
         self.turn_metadata.push(TurnMetadata {
             submitted_at: Some(format_turn_time_label()),
             model_name: Some(self.model_name.clone()),

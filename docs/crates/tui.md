@@ -34,10 +34,10 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 | `app/commands.rs` | 335 | `PROMPT_SLASH_COMMANDS` 斜杠命令表与分发、help overlay 条目 |
 | `app/prompt.rs` | 89 | 输入提示相关助手 |
 | `app/providers.rs` | 441 | provider/model 选择器条目构建 |
-| `app/messages.rs` | 156 | 消息列表操作助手 |
+| `app/messages.rs` | 223 | 消息列表操作助手 + 通知入队助手（`notify_error` / `notify_warning`） |
 | `app/turns.rs` | 176 | 回合状态转换助手 |
 | `app/views.rs` | 222 | 各视图状态切换助手 |
-| `app/types.rs` | 141 | `DisplayMessage`、`SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
+| `app/types.rs` | 146 | `DisplayMessage`、`SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
 | `app/tests.rs` | 890 | App 层测试 |
 
 从 `types` 公开再导出的类型：
@@ -67,7 +67,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `cost_tracker` | `Arc<CostTracker>` | 成本/Token 统计追踪器（跨线程共享） |
 | `messages` | `Vec<Message>` | 真实对话消息列表 |
 | `display_messages` | `Vec<DisplayMessage>` | 与 `messages` 同步的展示列表（含注入的系统标注），渲染器只需遍历一个序列 |
-| `system_annotations` | `Vec<SystemAnnotation>` | 渲染时穿插在真实消息之间的合成系统标注 |
+| `system_annotations` | `Vec<SystemAnnotation>` | 渲染时穿插在真实消息之间的合成系统标注（`SystemMessageStyle::{Info,Warning,Error,Compact}`；`Error` 渲染为红色 `API Error` 块） |
 | `input` | `String` | 输入框当前文本 |
 | `prompt_input` | `PromptInputState` | 提示输入组件状态 |
 | `input_history` | `Vec<String>` | 输入历史（↑/↓ 回溯） |
@@ -76,7 +76,8 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `is_streaming` | `bool` | 是否正在流式接收回复 |
 | `streaming_text` | `String` | 流式接收中的正文文本 |
 | `streaming_thinking` | `String` | 流式接收中的思考 (thinking) 文本 |
-| `status_message` | `Option<String>` | 状态栏临时消息 |
+| `status_message` | `Option<String>` | 状态栏临时消息（纯文本日志，不区分级别） |
+| `notifications` | `NotificationQueue` | 警告/错误通知队列，渲染在 model/mode 行右侧的提示槽（错误持久、警告 5s 过期） |
 | `spinner_verb` | `Option<String>` | 流式时 spinner 旁随机显示的动词 |
 | `should_exit` | `bool` | 退出标志 |
 | `show_help` | `bool` | 是否显示帮助 |
@@ -325,19 +326,39 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `render.rs` | 3559 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
+| `render.rs` | 3830 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
 | `messages/mod.rs` | 2675 | 各消息类型渲染器，流式渲染 |
 | `messages/markdown.rs` | 339 | Markdown 基础渲染 |
 | `messages/markdown_enhanced.rs` | 389 | 增强 Markdown（表格/代码块等） |
 | `virtual_list.rs` | 421 | 消息高效渲染的虚拟滚动列表 |
 | `transcript_turn.rs` | 175 | 回合感知的 transcript 分组与元数据 |
-| `prompt_input.rs` | **5084**（最大文件） | 完整提示输入组件：vim 模式、历史、typeahead、粘贴处理、渲染 |
+| `prompt_input.rs` | **5057**（最大文件） | 完整提示输入组件：vim 模式、历史、typeahead、粘贴处理、渲染 |
+| `notifications.rs` | 269 | 警告/错误通知队列（去重、按严重度取当前项、过期清理） |
 | `rustle.rs` | 260 | Rustle 吉祥物（🦀）渲染 |
 | `figures.rs` | 29 | 图标/符号常量 |
 | `theme_colors.rs` | 212 | 主题调色板与无障碍支持 |
 | `osc8.rs` | 325 | 渲染后 OSC 8 超链接叠加 |
 | `kitty_image.rs` | 424 | Kitty 图形协议内联图片渲染（含文本回退） |
 | `image_paste.rs` | 508 | 剪贴板图片粘贴 + Ctrl+V |
+
+> 提示框上方的 model/mode 行右侧是一个共用槽位（`render.rs::prompt_row_right_line`，右对齐、宽度
+> `min(终端宽, 50) - 1`）：**有通知时**渲染 `App::notifications` 队列的当前项 —— 错误（红 + 加粗）/
+> 警告（黄），前面带单字符 ASCII 标记（`x` / `!`，避免 East Asian ambiguous 字形在右对齐时失配）；
+> **否则**显示原有提示（`? shortcuts`，或粘贴占位符的 `click to view paste · alt+e expands`）。
+> 输入框内部只在**右下角**叠加 token 估算（`render_prompt_token_estimate`，`~1.3k`，超过 1000 字符
+> 才出现，右对齐贴右边缘），不再承载通知。
+>
+> 通知由 `App::notify_error` / `notify_warning` / `notify(kind, msg)` 入队（均在 `app/messages.rs`）：
+> 错误无生命周期（下一条 prompt 提交时由 `begin_user_turn_snapshot` 清除），警告 5 秒后过期；
+> 每帧在事件循环里调 `notifications.tick()` 清理。产生点：工具失败、`QueryEvent::Error`、
+> `QueryEvent::TokenWarning`（≥80% 警告 / ≥95% 错误）、导入失败、剪贴板为空，以及
+> `QueryEvent::Status` 中经 `NotificationKind::classify` 判定为错误/警告的文案。
+>
+> **会话内的终止错误**（请求超时、模型不可用、provider 流错误等）只通过 `run_query_loop` 的返回值
+> `QueryOutcome::Error` 上报，不会再发 `QueryEvent::Error`。`cli/bin/claurst.rs` 交互主循环在
+> 任务结束时匹配该结果：把错误文本作为 `SystemMessageStyle::Error` 标注插入 transcript
+> （红色 `API Error` 块，仅展示、不进入发给模型的历史），同时 `notify_error` 在提示行给出常驻告警；
+> 任务 panic（`JoinError`）同样处理。
 
 ## 6. 对话框 / 覆盖层（按功能分组）
 

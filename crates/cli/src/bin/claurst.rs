@@ -2166,6 +2166,8 @@ async fn run_interactive(
     'main: loop {
         app.frame_count = app.frame_count.wrapping_add(1);
         app.tick_rustle_pose();
+        // Drop notifications whose lifetime elapsed (warnings fade out here).
+        app.notifications.tick();
 
         // Process file injection dialog outcome (if any)
         if let Some((outcome, pending_input, pending_imgs)) = app.file_injection_dialog.take_outcome() {
@@ -3965,9 +3967,30 @@ async fn run_interactive(
 
         if task_finished {
             if let Some((handle, msgs_arc)) = current_query.take() {
-                // Get the outcome and handle errors
-                if let Ok(QueryOutcome::Error(_)) = handle.await {
-                    // The error is already shown in the transcript.
+                // Terminal failures only reach us through the task's return
+                // value (the query loop reports them there instead of emitting
+                // `QueryEvent::Error`), so they have to be surfaced here: a red
+                // "API Error" block in the transcript plus a persistent alert in
+                // the prompt row. Without this a request timeout or a model
+                // error just stopped the stream with no explanation.
+                match handle.await {
+                    Ok(QueryOutcome::Error(err)) => {
+                        let msg = err.to_string();
+                        app.push_system_message(
+                            msg.clone(),
+                            claurst_tui::app::SystemMessageStyle::Error,
+                        );
+                        app.notify_error(msg);
+                    }
+                    Err(join_err) => {
+                        let msg = format!("Query task failed: {join_err}");
+                        app.push_system_message(
+                            msg.clone(),
+                            claurst_tui::app::SystemMessageStyle::Error,
+                        );
+                        app.notify_error(msg);
+                    }
+                    _ => {}
                 }
                 // Sync the updated conversation back to our local vector
                 messages = msgs_arc.lock().await.clone();

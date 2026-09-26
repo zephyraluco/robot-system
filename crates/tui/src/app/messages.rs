@@ -1,8 +1,11 @@
-//! Transcript operations: add/replace/push, scroll.
+//! Transcript operations: add/replace/push, scroll, notifications.
+
+use std::time::Duration;
 
 use claurst_core::types::{Message, Role};
 use super::App;
 use super::types::{SystemAnnotation, SystemMessageStyle};
+use crate::notifications::NotificationKind;
 
 impl App {
     /// Add a message directly (e.g. from a non-streaming source).
@@ -112,5 +115,109 @@ impl App {
         }
         self.scroll_accel.round() as usize
     }
+}
 
+// ---------------------------------------------------------------------------
+// Notifications (warnings / errors for the prompt row)
+// ---------------------------------------------------------------------------
+
+/// How long a warning stays on the prompt row before it fades out. Errors get no
+/// lifetime at all — they stay until the next prompt is submitted.
+const WARNING_TTL: Duration = Duration::from_secs(5);
+
+/// Longest message kept in the queue. The prompt row shows one truncated line,
+/// and the entry survives until the next prompt, so there is no point holding on
+/// to a whole tool result.
+const MAX_MESSAGE_CHARS: usize = 200;
+
+impl App {
+    /// Queue a notification for the prompt row.
+    ///
+    /// `lifetime` of `None` keeps it until the next submitted prompt clears it.
+    pub fn push_notification(
+        &mut self,
+        kind: NotificationKind,
+        message: impl Into<String>,
+        lifetime: Option<Duration>,
+    ) {
+        self.notifications.push(kind, headline(&message.into()), lifetime);
+    }
+
+    /// Report a failure — red, and visible until the next prompt is submitted.
+    pub fn notify_error(&mut self, message: impl Into<String>) {
+        self.notify(NotificationKind::Error, message);
+    }
+
+    /// Report a warning — yellow, fading out after [`WARNING_TTL`].
+    pub fn notify_warning(&mut self, message: impl Into<String>) {
+        self.notify(NotificationKind::Warning, message);
+    }
+
+    /// Queue a notification using the default lifetime for its severity.
+    pub fn notify(&mut self, kind: NotificationKind, message: impl Into<String>) {
+        let lifetime = match kind {
+            NotificationKind::Error => None,
+            NotificationKind::Warning => Some(WARNING_TTL),
+        };
+        self.push_notification(kind, message, lifetime);
+    }
+}
+
+/// Collapse `message` to a single line and cap its length.
+///
+/// Callers pass user-facing text that can contain raw tool output or a provider
+/// error body (newlines, megabytes). The prompt row is one line wide, so the
+/// headline is what matters; the full text stays wherever it was already
+/// reported.
+fn headline(message: &str) -> String {
+    let one_line = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= MAX_MESSAGE_CHARS {
+        return one_line;
+    }
+    let mut capped: String = one_line.chars().take(MAX_MESSAGE_CHARS).collect();
+    capped.push('\u{2026}');
+    capped
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    use claurst_core::config::Config;
+    use claurst_core::cost::CostTracker;
+
+    fn app() -> App {
+        App::new(Config::default(), CostTracker::new())
+    }
+
+    #[test]
+    fn errors_persist_while_warnings_expire() {
+        let mut app = app();
+        // A zero lifetime stands in for "the timer already elapsed".
+        app.push_notification(NotificationKind::Warning, "warn", Some(Duration::ZERO));
+        app.notify_error("boom");
+        assert_eq!(app.notifications.current().unwrap().message, "boom");
+
+        // The expired warning is pruned, the persistent error survives.
+        app.notifications.tick();
+        assert_eq!(app.notifications.current().unwrap().message, "boom");
+
+        app.notifications.dismiss_errors();
+        assert!(app.notifications.is_empty());
+    }
+
+    #[test]
+    fn notify_warning_gets_a_bounded_lifetime() {
+        let mut app = app();
+        app.notify_warning("warn");
+        assert!(app.notifications.current().unwrap().expires_at.is_some());
+    }
+
+    #[test]
+    fn headline_collapses_newlines_and_caps_length() {
+        assert_eq!(headline("line one\n\n   line two"), "line one line two");
+        let long = "x".repeat(MAX_MESSAGE_CHARS + 50);
+        let capped = headline(&long);
+        assert_eq!(capped.chars().count(), MAX_MESSAGE_CHARS + 1);
+        assert!(capped.ends_with('\u{2026}'));
+    }
 }

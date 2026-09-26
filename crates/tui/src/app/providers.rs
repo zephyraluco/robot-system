@@ -262,6 +262,10 @@ impl App {
                 self.import_config_dialog.open(preview);
             }
             Err(err) => {
+                // Keep the status row: unlike a tool failure this text has no
+                // other home (no transcript copy), so the row carries the detail
+                // while the corner carries the alert.
+                self.notify_error(format!("Import failed: {}", err));
                 self.status_message = Some(format!("Import failed: {}", err));
             }
         }
@@ -302,6 +306,7 @@ impl App {
                 self.import_config_dialog.close();
             }
             Err(err) => {
+                self.notify_error(format!("Import failed: {}", err));
                 self.status_message = Some(format!("Import failed: {}", err));
                 self.import_config_dialog.close();
             }

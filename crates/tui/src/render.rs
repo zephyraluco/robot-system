@@ -40,6 +40,8 @@ const SPINNER: &[char] = &['\u{00b7}', '\u{2722}', '*', '\u{2736}', '\u{273b}', 
 const SPINNER: &[char] = &['\u{00b7}', '\u{2722}', '\u{2733}', '\u{2736}', '\u{273b}', '\u{273d}',
                             '\u{273d}', '\u{273b}', '\u{2736}', '\u{2733}', '\u{2722}', '\u{00b7}'];
 const CLAUDE_ORANGE: Color = Color::Rgb(233, 30, 99);
+/// Dim grey for secondary prompt-row text (hints, provider suffix).
+const PROMPT_DIM: Color = Color::Rgb(110, 110, 124);
 const WELCOME_BOX_HEIGHT: u16 = 9;
 const STATUS_THINKING: &str = "thinking";
 const STATUS_THINKING_ELLIPSIS: &str = "thinking\u{2026}";
@@ -1660,10 +1662,20 @@ fn render_system_annotation_lines(
         return;
     }
 
+    // Terminal failures get the red "API Error" block instead of the centred
+    // rule below: the text is a multi-line provider message, so it needs the
+    // line-by-line body and the `[expand]` hint.
+    if ann.style == SystemMessageStyle::Error {
+        lines.extend(crate::messages::render_system_api_error(&ann.text, None));
+        lines.push(Line::from(""));
+        return;
+    }
+
     let (text_color, border_color) = match ann.style {
         SystemMessageStyle::Info => (Color::DarkGray, Color::DarkGray),
         SystemMessageStyle::Warning => (Color::Yellow, Color::Yellow),
-        SystemMessageStyle::Compact => unreachable!(),
+        // Both are handled above with their own block layouts.
+        SystemMessageStyle::Error | SystemMessageStyle::Compact => unreachable!(),
     };
 
     // Centred, padded rule: "â”€â”€â”€ text â”€â”€â”€"
@@ -1944,7 +1956,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         };
 
         let pink = app.accent_color;
-        let dim = Color::Rgb(110, 110, 124);
+        let dim = PROMPT_DIM;
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1), Constraint::Length(status_area.width.min(50))])
@@ -1994,23 +2006,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
             ])
         };
 
-        // `?` opens the shortcuts overlay which already lists Ctrl+A / Ctrl+K
-        // and friends — surfacing them again here is redundant clutter. It is
-        // also suppressed once the prompt has text, so the hint doesn't compete
-        // with what the user is typing (matches the footer contract).
-        let right_hint = if app.has_credentials && app.prompt_input.text.is_empty() {
-            Line::from(vec![
-                Span::styled("? shortcuts", Style::default().fg(dim)),
-            ])
-        } else if app.prompt_input.has_expandable_paste_ref() {
-            // A [Pasted text #N ...] placeholder is in the buffer — tell the
-            // user how to view the full pasted body before submitting.
-            Line::from(vec![
-                Span::styled("click to view paste · alt+e expands", Style::default().fg(dim)),
-            ])
-        } else {
-            Line::from(Vec::<Span>::new())
-        };
+        // Right side of the model/mode row: the active notification wins over the
+        // hint — a failure must not be hidden behind `? shortcuts`.
+        let right_hint = prompt_row_right_line(app, chunks[1].width.saturating_sub(1) as usize);
 
         let left_padded = Rect {
             x: chunks[0].x + 1,
@@ -2046,6 +2044,90 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         app.accent_color,
         app.settings_screen.cursor_blink_enabled,
     );
+
+    render_prompt_token_estimate(frame.buffer_mut(), input_area, app);
+}
+
+/// Right-hand side of the model/mode row that sits above the prompt box.
+///
+/// The slot normally carries the contextual hint (`? shortcuts`, the paste
+/// helper), but the current notification takes it over: an error or warning is
+/// the one thing on this row the user must not miss. Info-level statuses never
+/// come here — they stay in the status row above the box.
+fn prompt_row_right_line(app: &App, max_width: usize) -> Line<'static> {
+    if let Some(note) = app.notifications.current() {
+        let text = format!("{} {}", note.kind.marker(), note.message);
+        return Line::from(vec![Span::styled(
+            truncate_end(&text, max_width.max(1)),
+            note.kind.style(),
+        )]);
+    }
+
+    // `?` opens the shortcuts overlay which already lists Ctrl+A / Ctrl+K and
+    // friends — surfacing them again here is redundant clutter. It is also
+    // suppressed once the prompt has text, so the hint doesn't compete with what
+    // the user is typing (matches the footer contract).
+    if app.has_credentials && app.prompt_input.text.is_empty() {
+        return Line::from(vec![Span::styled(
+            "? shortcuts",
+            Style::default().fg(PROMPT_DIM),
+        )]);
+    }
+    if app.prompt_input.has_expandable_paste_ref() {
+        // A [Pasted text #N ...] placeholder is in the buffer — tell the user how
+        // to view the full pasted body before submitting.
+        return Line::from(vec![Span::styled(
+            "click to view paste · alt+e expands",
+            Style::default().fg(PROMPT_DIM),
+        )]);
+    }
+    Line::from(Vec::<Span>::new())
+}
+
+/// Draw the token estimate for the current input in the prompt box's
+/// bottom-right corner.
+///
+/// The notification / hint slot lives on the model/mode row *above* the box
+/// (`prompt_row_right_line`), so this is the only overlay painted inside it. It
+/// is right-aligned and truncated to the box width: it never reflows the prompt
+/// text and hugs the box's right edge, matching the rule the bottom border
+/// draws. It only appears past 1000 characters of input.
+fn render_prompt_token_estimate(buf: &mut Buffer, area: Rect, app: &App) {
+    if area.width == 0 || area.height < 2 || app.prompt_input.text.len() <= 1000 {
+        return;
+    }
+
+    // The last row of the prompt area is the breathing row under the box's bottom
+    // rule; for tall (scrolling) inputs it is the rule itself.
+    let n = app.prompt_input.token_estimate;
+    // Format mirrors TS formatTokens: compact "1.3k" at ≥1000, raw below.
+    let text = if n >= 1000 {
+        let k = n as f64 / 1000.0;
+        // Suppress a trailing ".0" (2000 → "2k", 1300 → "1.3k").
+        if (k * 10.0).round() % 10.0 == 0.0 {
+            format!("~{}k", k as u64)
+        } else {
+            format!("~{:.1}k", k)
+        }
+    } else {
+        format!("~{}", n)
+    };
+
+    let w = UnicodeWidthStr::width(text.as_str()) as u16;
+    if w == 0 || w > area.width {
+        return;
+    }
+    let rect = Rect {
+        x: area.x + area.width - w,
+        y: area.y + area.height - 1,
+        width: w,
+        height: 1,
+    };
+    Paragraph::new(Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(Color::DarkGray),
+    )]))
+    .render(rect, buf);
 }
 
 fn should_render_status_row(app: &App) -> bool {
@@ -3543,5 +3625,206 @@ mod recent_activity_tests {
             .collect();
         assert!(screen.contains("Recent activity"), "header rendered: present");
         assert!(screen.contains("Sortable label"), "session label rendered");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt row + prompt box overlays
+// ---------------------------------------------------------------------------
+
+/// The model/mode row above the prompt box: hint vs. notification.
+#[cfg(test)]
+mod prompt_status_row_tests {
+    use super::*;
+    use crate::app::App;
+    use claurst_core::config::Config;
+    use claurst_core::cost::CostTracker;
+
+    /// Width of the hint slot on an 80-column terminal: `min(width, 50) - 1`.
+    const SLOT: usize = 49;
+
+    /// `has_credentials` + empty prompt: the state in which the hint shows.
+    fn hint_app() -> App {
+        let mut app = App::new(Config::default(), CostTracker::new());
+        app.has_credentials = true;
+        app
+    }
+
+    fn text_of(line: &Line<'_>) -> String {
+        flatten_line_text(line)
+    }
+
+    fn color_of(line: &Line<'_>) -> Option<Color> {
+        line.spans.first().and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn hint_is_shown_when_no_notification_is_active() {
+        let app = hint_app();
+        assert_eq!(text_of(&prompt_row_right_line(&app, SLOT)), "? shortcuts");
+        assert_eq!(color_of(&prompt_row_right_line(&app, SLOT)), Some(PROMPT_DIM));
+    }
+
+    #[test]
+    fn error_notification_takes_over_the_hint_slot_in_red() {
+        let mut app = hint_app();
+        app.notify_error("Tool error: boom");
+        let line = prompt_row_right_line(&app, SLOT);
+        assert_eq!(text_of(&line), "x Tool error: boom");
+        assert_eq!(color_of(&line), Some(Color::Red));
+    }
+
+    #[test]
+    fn warning_notification_takes_over_the_hint_slot_in_yellow() {
+        let mut app = hint_app();
+        app.notify_warning("Clipboard is empty");
+        let line = prompt_row_right_line(&app, SLOT);
+        assert_eq!(text_of(&line), "! Clipboard is empty");
+        assert_eq!(color_of(&line), Some(Color::Yellow));
+    }
+
+    #[test]
+    fn error_outranks_a_queued_warning() {
+        let mut app = hint_app();
+        app.notify_warning("Clipboard is empty");
+        app.notify_error("Tool error: boom");
+        assert!(text_of(&prompt_row_right_line(&app, SLOT)).starts_with("x "));
+
+        // Dismissing the error falls back to the still-queued warning.
+        app.notifications.dismiss_errors();
+        assert!(text_of(&prompt_row_right_line(&app, SLOT)).starts_with("! "));
+    }
+
+    #[test]
+    fn long_notification_is_truncated_to_the_slot() {
+        let mut app = hint_app();
+        app.notify_error(format!("Tool error: {}", "boom ".repeat(40)));
+        let text = text_of(&prompt_row_right_line(&app, SLOT));
+        assert!(
+            UnicodeWidthStr::width(text.as_str()) <= SLOT,
+            "fits the slot: {text:?}"
+        );
+        assert!(text.ends_with('\u{2026}'), "ellipsised: {text:?}");
+    }
+
+    #[test]
+    fn status_message_alone_stays_out_of_the_row() {
+        // Info-level statuses belong to the status row above the box; only
+        // notifications are painted into this slot.
+        let mut app = hint_app();
+        app.status_message = Some("Conversation cleared.".to_string());
+        assert_eq!(text_of(&prompt_row_right_line(&app, SLOT)), "? shortcuts");
+    }
+}
+
+/// Token estimate inside the prompt box's bottom-right corner.
+#[cfg(test)]
+mod prompt_token_estimate_tests {
+    use super::*;
+    use crate::app::App;
+    use claurst_core::config::Config;
+    use claurst_core::cost::CostTracker;
+
+    /// A prompt box 4 rows tall: top rule, text row, bottom rule, breathing row.
+    const BOX: Rect = Rect { x: 0, y: 0, width: 40, height: 4 };
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect()
+    }
+
+    /// True when the row's last `expected` cells hold `expected` and everything
+    /// left of it is blank — i.e. the overlay is flush against the right edge.
+    fn right_aligned(buf: &Buffer, y: u16, expected: &str) -> bool {
+        let chars: Vec<char> = row_text(buf, y).chars().collect();
+        let n = expected.chars().count();
+        if chars.len() < n {
+            return false;
+        }
+        let split = chars.len() - n;
+        let tail: String = chars[split..].iter().collect();
+        tail == expected && chars[..split].iter().all(|c| *c == ' ')
+    }
+
+    fn app_with_input(chars: usize, tokens: usize) -> App {
+        let mut app = App::new(Config::default(), CostTracker::new());
+        app.prompt_input.text = "x".repeat(chars);
+        app.prompt_input.token_estimate = tokens;
+        app
+    }
+
+    #[test]
+    fn estimate_is_rendered_in_the_bottom_right_corner() {
+        let app = app_with_input(1001, 1300);
+        let mut buf = Buffer::empty(BOX);
+        render_prompt_token_estimate(&mut buf, BOX, &app);
+
+        // Bottom-right corner = the last row of the prompt area (row 3 here).
+        assert!(
+            right_aligned(&buf, 3, "~1.3k"),
+            "bottom-right and flush: {:?}",
+            row_text(&buf, 3)
+        );
+        let first = BOX.width - "~1.3k".len() as u16;
+        assert_eq!(buf[(first, 3)].fg, Color::DarkGray);
+        // The first text row stays free for the prompt text.
+        assert_eq!(row_text(&buf, 1).trim(), "");
+    }
+
+    #[test]
+    fn estimate_stays_hidden_for_short_input() {
+        let app = app_with_input(5, 2);
+        let mut buf = Buffer::empty(BOX);
+        render_prompt_token_estimate(&mut buf, BOX, &app);
+        assert_eq!(row_text(&buf, 3).trim(), "");
+    }
+
+    #[test]
+    fn estimate_uses_the_compact_form_above_1000_tokens() {
+        let app = app_with_input(1001, 2000);
+        let mut buf = Buffer::empty(BOX);
+        render_prompt_token_estimate(&mut buf, BOX, &app);
+        assert!(right_aligned(&buf, 3, "~2k"), "{:?}", row_text(&buf, 3));
+    }
+}
+
+/// Inline system annotations: `Error` gets the red API-error block, the other
+/// styles keep the centred rule.
+#[cfg(test)]
+mod system_annotation_tests {
+    use super::*;
+    use crate::app::{SystemAnnotation, SystemMessageStyle};
+
+    fn annotation(style: SystemMessageStyle) -> SystemAnnotation {
+        SystemAnnotation {
+            after_index: 0,
+            text: "Provider stream error: request timed out after 60s".to_string(),
+            style,
+        }
+    }
+
+    fn render(style: SystemMessageStyle) -> String {
+        let mut lines = Vec::new();
+        render_system_annotation_lines(&mut lines, &annotation(style), 80);
+        lines
+            .iter()
+            .map(flatten_line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn error_annotation_renders_the_api_error_block() {
+        let text = render(SystemMessageStyle::Error);
+        assert!(text.contains("API Error"), "block header: {text:?}");
+        assert!(text.contains("timed out after 60s"), "message kept: {text:?}");
+    }
+
+    #[test]
+    fn warning_annotation_keeps_the_inline_rule() {
+        let text = render(SystemMessageStyle::Warning);
+        assert!(text.contains("timed out after 60s"), "message kept: {text:?}");
+        assert!(!text.contains("API Error"), "no block for warnings: {text:?}");
     }
 }

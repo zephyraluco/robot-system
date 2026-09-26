@@ -7,6 +7,11 @@ use claurst_core::types::Message;
 pub enum SystemMessageStyle {
     Info,
     Warning,
+    /// Terminal failure the user must see (provider/API error, request
+    /// timeout, model unavailable). Rendered as the red "API Error" block
+    /// (`messages::render_system_api_error`), unlike the inline rule used by
+    /// [`Self::Info`] / [`Self::Warning`].
+    Error,
     /// Compact / auto-compact boundary marker.
     Compact,
 }

@@ -96,6 +96,8 @@ pub mod messages;
 pub mod transcript_turn;
 /// Complete prompt input with vim mode, history, typeahead, and paste handling.
 pub mod prompt_input;
+/// Warning / error notifications shown in the prompt box's corner.
+pub mod notifications;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
 pub mod message_copy;
 /// Effort-level picker dialog (/effort).
@@ -108,6 +110,7 @@ pub mod file_injection;
 // ---------------------------------------------------------------------------
 
 pub use app::{App, try_copy_to_clipboard};
+pub use notifications::{Notification, NotificationKind, NotificationQueue};
 pub use input::{is_slash_command, parse_slash_command};
 pub use dialogs::feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResponse};
 pub use dialogs::memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
@@ -1045,7 +1048,14 @@ mod tests {
             is_error: true,
         });
         assert_eq!(app.tool_use_blocks[0].status, ToolStatus::Error);
-        assert!(app.status_message.is_some());
+        // The failure headline goes to the prompt corner (the full result stays
+        // in the transcript), so the dim status row is cleared instead.
+        assert!(app.notifications.current().is_some());
+        assert_eq!(
+            app.notifications.current().unwrap().kind,
+            crate::notifications::NotificationKind::Error
+        );
+        assert!(app.status_message.is_none());
     }
 
     #[test]
