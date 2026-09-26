@@ -1,33 +1,10 @@
 //! Prompt input state machine.
 
-use crate::overlays::SelectorMessage;
 use crate::prompt_input::InputMode;
 use super::App;
 use super::commands::PROMPT_SLASH_COMMANDS;
 
 impl App {
-    /// Open the rewind flow with the current message list converted to
-    /// `SelectorMessage` entries.
-    pub fn open_rewind_flow(&mut self) {
-        let selector_msgs: Vec<SelectorMessage> = self
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                let text = m.get_all_text();
-                let preview: String = text.chars().take(80).collect();
-                let has_tool_use = !m.get_tool_use_blocks().is_empty();
-                SelectorMessage {
-                    idx: i,
-                    role: format!("{:?}", m.role).to_lowercase(),
-                    preview,
-                    has_tool_use,
-                }
-            })
-            .collect();
-        self.rewind_flow.open(selector_msgs);
-    }
-
     pub(super) fn prompt_mode(&self) -> InputMode {
         // Note: previously returned Readonly while streaming, but the prompt
         // now accepts input during streaming so the user can compose / queue

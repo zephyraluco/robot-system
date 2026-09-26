@@ -313,8 +313,6 @@ impl App {
     }
 
     pub(super) fn open_model_picker_for_provider(&mut self, provider_id: &str, title: Option<String>) {
-        self.dismiss_error_notifications();
-
         let cache_path = dirs::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("claurst")

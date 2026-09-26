@@ -36,7 +36,7 @@
 11. **MCP**：`McpToolWrapper` 把 MCP 工具包装成原生 `claurst_tools::Tool`（权限级别视为 Execute）；`filter_tools_for_agent()` 按 agent 过滤
 12. **两条主运行路径**：
     - **`run_headless()`**：单次查询输出到 stdout，支持 stream-json 输入/输出、预算、fallback model
-    - **`run_interactive()`**（约 2500 行）：完整 TUI REPL——slash 命令执行（调 `claurst_commands::execute_command`）、TUI overlay 拦截（hooks/import-config/rewind）、provider 运行时重建（`refresh_provider_runtime_state`）、bridge 配置解析、`handle_exit_key`（Ctrl+C + 取消 token）
+    - **`run_interactive()`**（约 2500 行）：完整 TUI REPL —— slash 命令执行（调 `claurst_commands::execute_command`）、TUI overlay 拦截（hooks/import-config）、provider 运行时重建（`refresh_provider_runtime_state`）、bridge 配置解析、`handle_exit_key`（Ctrl+C + 取消 token）
 
 ### (2) `rsctl.rs`（71 行，独立工具）
 

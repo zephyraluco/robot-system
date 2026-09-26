@@ -4,7 +4,7 @@
 
 ## 1. 定位
 
-ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）、流式输出、工具进度、权限对话框、成本/token 显示、通知横幅、各类 overlay、bridge 状态、插件提示等。
+ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）、流式输出、工具进度、权限对话框、成本/token 显示、各类 overlay、bridge 状态、插件提示等。
 
 ## 2. 依赖
 
@@ -15,33 +15,33 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 ## 3. 主入口与 run loop
 
 - **`lib.rs`**（1495 行）：终端初始化/拆除——`setup_terminal(mouse_capture)`（raw mode、alternate screen、bracketed paste、kitty keyboard enhancement 协议检测、mouse capture 可关、panic hook 只在主线程恢复终端）、`restore_terminal()`、OSC 9;4 进度指示、终端标题管理。全部子模块声明与 re-export 也在这里。
-- **`app/run.rs` → `App::run(&mut terminal)`**：**TUI 主事件循环**，返回 `Option<String>`。每帧：drain 后台 session 列表 → `terminal.draw(render::render_app)` → OSC 8 超链接扫描重发（URL 可 Ctrl/Cmd 点击）→ 50ms 轮询 crossterm 事件 → 粘贴爆发检测 → `handle_key_event` → 提交/退出。token 警告横幅与 `CostTracker` 同步也在此。
+- **`app/run.rs` → `App::run(&mut terminal)`**：**TUI 主事件循环**，返回 `Option<String>`。每帧：drain 后台 session 列表 → `terminal.draw(render::render_app)` → OSC 8 超链接扫描重发（URL 可 Ctrl/Cmd 点击）→ 50ms 轮询 crossterm 事件 → 粘贴爆发检测 → `handle_key_event` → 提交/退出。cost/token 计数与 `CostTracker` 同步也在此。
 - **集成点**：`crates/cli/src/bin/claurst.rs` 中 `App::new(...)` + `app.run(...)` + 多处 `claurst_query::run_query_loop(...)`——CLI 主程序把 TUI 输入喂给查询循环，循环经 `QueryEvent` channel 回流渲染。
 
 ## 4. `App` 结构与 app/ 子模块
 
-`App` 是整个 TUI 应用的顶层状态容器（来源：`crates/tui/src/app/mod.rs`）：约 **170 个字段**、
+`App` 是整个 TUI 应用的顶层状态容器（来源：`crates/tui/src/app/mod.rs`）：约 **156 个字段**、
 2 个私有字段、若干常量/工具函数以及少量核心方法。字段按功能域划分为十余个区块，
 由同目录子模块（`commands`、`keys`、`messages`、`mouse`、`prompt`、`providers`、
 `run`、`turns`、`views` 等）分别操作。逐字段解析见 4.2 起。
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `app/mod.rs` | 906 | App 结构体、状态字段、子模块组织；`try_copy_to_clipboard`（跨平台） |
-| `app/run.rs` | 561 | **主事件循环 `run()`** |
-| `app/keys.rs` | 2703 | 键盘事件处理：快捷键、kitty 协议 shift 归一化（#183）、vim 命令行 `:q`/`:wq` |
-| `app/mouse.rs` | 658 | 鼠标事件：滚动、右键菜单、拖选 |
-| `app/commands.rs` | 356 | `PROMPT_SLASH_COMMANDS` 斜杠命令表与分发、help overlay 条目 |
-| `app/prompt.rs` | — | 输入提示相关助手 |
+| `app/mod.rs` | 858 | App 结构体、状态字段、子模块组织；`try_copy_to_clipboard`（跨平台） |
+| `app/run.rs` | 575 | **主事件循环 `run()`** |
+| `app/keys.rs` | 1813 | 键盘事件处理：快捷键、kitty 协议 shift 归一化（#183）、vim 命令行 `:q`/`:wq` |
+| `app/mouse.rs` | 717 | 鼠标事件：滚动、右键菜单、拖选 |
+| `app/commands.rs` | 335 | `PROMPT_SLASH_COMMANDS` 斜杠命令表与分发、help overlay 条目 |
+| `app/prompt.rs` | 89 | 输入提示相关助手 |
 | `app/providers.rs` | 441 | provider/model 选择器条目构建 |
-| `app/messages.rs` | — | 消息列表操作助手 |
+| `app/messages.rs` | 156 | 消息列表操作助手 |
 | `app/turns.rs` | 176 | 回合状态转换助手 |
-| `app/views.rs` | 404 | 各视图状态切换助手 |
-| `app/types.rs` | 245 | `DisplayMessage`、`SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
-| `app/tests.rs` | 960 | App 层测试 |
+| `app/views.rs` | 222 | 各视图状态切换助手 |
+| `app/types.rs` | 141 | `DisplayMessage`、`SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
+| `app/tests.rs` | 890 | App 层测试 |
 
 从 `types` 公开再导出的类型：
-`ContextMenuKind`、`DisplayMessage`、`FocusTarget`、`HistorySearch`、
+`ContextMenuKind`、`DisplayMessage`、`FocusTarget`、
 `RecentSession`、`SystemAnnotation`、`SystemMessageStyle`、`ToolStatus`、
 `ToolUseBlock`、`TurnMetadata`、`recent_session_label`。
 
@@ -100,7 +100,6 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `accent_color` | `Color` | 由代理模式派生的强调色（Build=粉，Plan=蓝） |
 | `agent_mode_changed` | `bool` | `cycle_agent_mode` 设置，主循环据此更新查询配置和工具列表 |
 | `agent_status` | `Vec<(String, String)>` | 子代理状态列表 |
-| `history_search` | `Option<HistorySearch>` | Ctrl+R 历史搜索状态 |
 | `keybindings` | `KeybindingResolver` | 键位解析器（加载用户自定义键位） |
 | `cursor_pos` | `usize` | 输入框内光标位置（字节偏移） |
 
@@ -110,7 +109,6 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 |---|---|---|
 | `auto_scroll` | `bool` | 消息窗格是否自动跟随最新消息 |
 | `new_messages_while_scrolled` | `usize` | 用户上翻期间到达的新消息数 |
-| `token_warning_threshold_shown` | `u8` | 已通知的 token 阈值（0/80/95/100），保证每档横幅只提示一次 |
 
 ### 4.5 会话计时 / Rustle 吉祥物动画
 
@@ -129,18 +127,12 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 相关方法：`tick_rustle_pose()`（每帧更新姿势：卡顿 3s 后显示 Loading spinner、随机 look-right、临时姿势到期恢复默认）、`rustle_look_down()`。
 
-### 4.6 覆盖层 / 通知 / 桥接
+### 4.6 覆盖层 / 桥接
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `help_overlay` | `HelpOverlay` | 全屏帮助覆盖层（? / F1），启动时从 `help_overlay_entries()` 填充 |
-| `history_search_overlay` | `HistorySearchOverlay` | Ctrl+R 历史搜索覆盖层 |
-| `global_search` | `GlobalSearchState` | 全局 ripgrep 搜索 / 快速打开覆盖层 |
-| `message_selector` | `MessageSelectorOverlay` | `/rewind` 使用的消息选择器 |
-| `rewind_flow` | `RewindFlowOverlay` | 多步回退流程覆盖层 |
 | `bridge_state` | `BridgeConnectionState` | Bridge（远程会话）连接状态 |
-| `notifications` | `NotificationQueue` | 通知队列 |
-| `error_modal_scroll_offset` | `usize` | 错误弹窗文本滚动偏移 |
 | `plugin_hints` | `Vec<PluginHintBanner>` | 插件提示横幅 |
 | `session_title` | `Option<String>` | 状态栏显示的会话标题 |
 | `remote_session_url` | `Option<String>` | Bridge 连接后的远程会话 URL（命令可读） |
@@ -159,7 +151,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `away_summary` | `Option<String>` | 欢迎屏 "While you were away" 摘要 |
 | `stall_start` | `Option<Instant>` | 流式卡顿起点（3s 后 spinner 变红） |
 
-### 4.8 对话框、屏幕与后台加载（约 66 个字段）
+### 4.8 对话框、屏幕与后台加载（约 58 个字段）
 
 #### 全屏屏幕 / 主对话框
 
@@ -168,25 +160,17 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `settings_screen` | `SettingsScreen` | 全屏标签式设置屏（/config、/settings） |
 | `theme_screen` | `ThemeScreen` | 主题选择器（/theme），配套 `apply_theme()` 方法 |
 | `stats_dialog` | `StatsDialogState` | Token/费用分析对话框 |
-| `mcp_view` | `McpViewState` | MCP 服务器浏览与工具详情 |
-| `agents_menu` | `AgentsMenuState` | 代理定义与活跃代理状态覆盖层 |
 | `diff_viewer` | `DiffViewerState` | Diff 查看器覆盖层 |
-| `paste_viewer` | `PasteViewer` | `[Pasted text #N ...]` 占位符只读查看器 |
 | `feedback_survey` | `FeedbackSurveyState` | 会话质量反馈问卷覆盖层 |
 | `memory_file_selector` | `MemoryFileSelectorState` | 内存文件选择器（AGENTS.md 浏览） |
 | `hooks_config_menu` | `HooksConfigMenuState` | Hooks 配置只读浏览器 |
-| `overage_upsell` | `OverageCreditUpsellState` | 超额积分升级横幅 |
 | `desktop_upsell` | `DesktopUpsellStartupState` | 桌面应用升级启动对话框 |
 | `invalid_config_dialog` | `InvalidConfigDialogState` | settings.json / AGENTS.md 损坏时的启动错误对话框 |
-| `memory_update_notification` | `MemoryUpdateNotificationState` | 内存更新通知横幅 |
 | `elicitation` | `ElicitationDialogState` | MCP elicitation 表单对话框 |
 | `model_picker` | `ModelPickerState` | 模型选择器（/model） |
 | `session_browser` | `SessionBrowserState` | 会话浏览器（/session、/resume、/rename、/export） |
 | `session_branching` | `SessionBranchingState` | 会话分支覆盖层（Ctrl+B） |
-| `tasks_overlay` | `TasksOverlay` | 任务进度覆盖层（Ctrl+T，可切换状态） |
 | `export_dialog` | `ExportDialogState` | 导出格式选择（/export） |
-| `context_viz` | `ContextVizState` | 上下文窗口 / 速率限制可视化（/context） |
-| `go_to_line_dialog` | `GoToLineDialog` | 跳转行号对话框（Ctrl+G） |
 
 #### MCP 审批（项目级信任）
 
@@ -341,7 +325,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `render.rs` | 3894 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
+| `render.rs` | 3559 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
 | `messages/mod.rs` | 2675 | 各消息类型渲染器，流式渲染 |
 | `messages/markdown.rs` | 339 | Markdown 基础渲染 |
 | `messages/markdown_enhanced.rs` | 389 | 增强 Markdown（表格/代码块等） |
@@ -363,15 +347,15 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 - **提问/表单**：`dialogs/ask_user_dialog.rs`（AskUserQuestion 弹窗）、`dialogs/elicitation_dialog.rs`(797，MCP elicitation 表单)
 - **模型/effort**：`dialogs/model_picker.rs`(1585)、`effort_picker.rs`(1004)
 - **会话**：`dialogs/session_browser.rs`(605)、`dialogs/session_branching.rs`（Ctrl+B 分支）、`dialogs/export_dialog.rs`、`dialogs/memory_file_selector.rs`
-- **代码视图**：`dialogs/diff_viewer.rs`(1305，两栏 diff)、`paste_viewer.rs`
-- **系统状态**：`dialogs/stats_dialog.rs`(914)、`context_viz.rs`、`mcp_view.rs`(676)、`tasks_overlay.rs`、`agents_view.rs`(959)、`dialogs/hooks_config_menu.rs`（Hooks 只读浏览器）
+- **代码视图**：`dialogs/diff_viewer.rs`(1305，两栏 diff)
+- **系统状态**：`dialogs/stats_dialog.rs`(914)、`dialogs/hooks_config_menu.rs`（Hooks 只读浏览器）
 - **设置/引导**：`dialogs/settings_screen.rs`（全屏可搜索设置屏）、`dialogs/theme_screen.rs`（主题选择器）、`dialogs/onboarding_dialog.rs`、`dialogs/invalid_config_dialog.rs`、`dialogs/import_config_dialog.rs`
 - **认证/账户**：`dialogs/device_auth_dialog.rs`（设备码 OAuth）、`dialogs/key_input_dialog.rs`、`dialogs/custom_provider_dialog.rs`、`dialogs/free_mode_dialog.rs`
 - **通用控件**：`dialogs/dialog_select.rs`(621，可复用模糊搜索选择列表)、`dialogs/dialog.rs`（基座）
-- **通知/横幅**：`notifications.rs`、`dialogs/feedback_survey.rs`、`overage_upsell.rs`、`dialogs/desktop_upsell_startup.rs`、`memory_update_notification.rs`
+- **问卷/引导弹窗**：`dialogs/feedback_survey.rs`、`dialogs/desktop_upsell_startup.rs`
 - **输入辅助**：`file_injection.rs`（@file 引用解析）、`dialogs/file_injection_dialog.rs`、`message_copy.rs`(480，多格式复制)
 - **连接**：`bridge_state.rs`、`plugin_views.rs`
-- **overlays.rs**(2246)：帮助 overlay、历史搜索、消息选择器、rewind 流程、全局搜索
+- **overlays.rs**(592)：共享模态 chrome（`ModalLayout`、深色遮罩、标题栏、搜索行）与帮助 overlay（`HelpOverlay`）；其余覆盖层/对话框一律位于 `dialogs/` 并基于 `DialogCore`
 - `input.rs`：斜杠命令解析（`is_slash_command`/`parse_slash_command`）
 
 ## 7. tests/

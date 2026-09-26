@@ -2,25 +2,18 @@
 
 use std::cell::RefCell;
 
-use crate::agents_view::render_agents_menu;
-use crate::context_viz::render_context_viz;
 use crate::app::{App, ContextMenuKind, SystemAnnotation, SystemMessageStyle, ToolStatus};
 use crate::rustle::rustle_lines;
 use crate::dialogs::dialog::DialogBehavior as _;
-use crate::tasks_overlay::render_tasks_overlay;
-use crate::overage_upsell::render_overage_upsell;
-use crate::memory_update_notification::render_memory_update_notification;
 use crate::figures;
-use crate::mcp_view::render_mcp_view;
 use crate::messages::{
     render_transcript_assistant_message_tagged,
     render_transcript_assistant_meta, render_transcript_live_text, render_transcript_user_message,
     render_thinking_live_content,
     RenderContext,
 };
-use crate::notifications::{render_notification_banner, Notification, NotificationKind};
 use crate::overlays::{
-    render_global_search, render_help_overlay, render_history_search_overlay, render_rewind_flow,
+    render_help_overlay,
     CLAURST_ACCENT,
 };
 use crate::plugin_views::render_plugin_hints;
@@ -64,95 +57,6 @@ fn spinner_color(app: &App) -> Color {
         }
     }
     CLAUDE_ORANGE
-}
-
-fn is_modal_open(app: &App) -> bool {
-    app.any_modal_open()
-}
-
-// -----------------------------------------------------------------------
-// Error modal rendering
-// -----------------------------------------------------------------------
-
-/// Render an error modal dialog with wrapped content.
-fn render_error_modal(frame: &mut Frame, area: Rect, notification: &Notification, _scroll_offset: usize, footer_area: Rect, is_welcome_screen: bool) {
-    // When the footer anchor is inside the welcome box (y < WELCOME_BOX_HEIGHT), or explicitly on
-    // the welcome screen, center the modal so it doesn't awkwardly overlap the welcome box.
-    let anchored_in_welcome_box = footer_area.width > 0 && footer_area.y < WELCOME_BOX_HEIGHT;
-    let modal_area = if is_welcome_screen || anchored_in_welcome_box {
-        let modal_width = (area.width * 2 / 3).max(40).min(area.width);
-        let modal_height = (area.height / 3).max(8).min(area.height.saturating_sub(2));
-        Rect {
-            x: area.x + (area.width.saturating_sub(modal_width)) / 2,
-            y: area.y + (area.height.saturating_sub(modal_height)) / 2,
-            width: modal_width,
-            height: modal_height,
-        }
-    } else if footer_area.width > 0 {
-        let desired_height = (area.height / 3).max(8)
-            .min(area.height.saturating_sub(footer_area.y));
-        Rect {
-            x: footer_area.x,
-            y: footer_area.y,
-            width: footer_area.width,
-            height: desired_height,
-        }
-    } else {
-        let modal_width = area.width / 2;
-        let modal_height = area.height.saturating_sub(4);
-        Rect {
-            x: area.x + modal_width,
-            y: area.y,
-            width: modal_width,
-            height: modal_height,
-        }
-    };
-
-    frame.render_widget(Clear, modal_area);
-
-    let modal_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .style(Style::default().fg(Color::Red));
-    frame.render_widget(modal_block, modal_area);
-
-    let header_bg_area = Rect {
-        x: modal_area.x + 1,
-        y: modal_area.y + 1,
-        width: modal_area.width.saturating_sub(2),
-        height: 1,
-    };
-    let header_style = Style::default().bg(Color::Rgb(60, 15, 15)).fg(Color::Red);
-    let header_para = Paragraph::new("  ⚠ Error  ")
-        .style(header_style.add_modifier(Modifier::BOLD));
-    frame.render_widget(header_para, header_bg_area);
-
-    let sep_area = Rect {
-        x: modal_area.x + 1,
-        y: modal_area.y + 2,
-        width: modal_area.width.saturating_sub(2),
-        height: 1,
-    };
-    let sep_line = Paragraph::new(Line::from(Span::styled(
-        "─".repeat(sep_area.width as usize),
-        Style::default().fg(Color::Rgb(80, 20, 20)),
-    )));
-    frame.render_widget(sep_line, sep_area);
-
-    // Chrome: border(1) + header(1) + sep(1) + blank(1) + border(1) = 5 rows
-    let body_start_y = modal_area.y + 4;
-    let body_height = modal_area.height.saturating_sub(5).max(1);
-    let body_area = Rect {
-        x: modal_area.x + 2,
-        y: body_start_y,
-        width: modal_area.width.saturating_sub(4),
-        height: body_height,
-    };
-
-    let body_para = Paragraph::new(notification.message.as_str())
-        .style(Style::default().fg(Color::Rgb(220, 220, 220)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(body_para, body_area);
 }
 
 // -----------------------------------------------------------------------
@@ -521,14 +425,12 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         size,
     );
 
-    let prompt_focused =
-        app.permission_request.is_none() && !app.history_search_overlay.visible;
+    let prompt_focused = app.permission_request.is_none();
     // Suggestions popup tracks whether the prompt accepts input, not whether
     // it is the focused widget. Text entry is allowed during streaming so the
     // user can queue the next message, so the typeahead popup must follow
     // that same affordance.
-    let suggestions_visible =
-        app.permission_request.is_none() && !app.history_search_overlay.visible;
+    let suggestions_visible = app.permission_request.is_none();
     let status_visible = should_render_status_row(app);
     // One blank separator row above the status/input area when status is active,
     // matching the visual breathing room in the TS layout.
@@ -611,35 +513,12 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         pr.render(frame, size);
     }
 
-    // Rewind flow (takes over screen)
-    if app.rewind_flow.visible {
-        render_rewind_flow(frame, &app.rewind_flow, size);
-    }
-
-    // Tasks overlay (Ctrl+T)
-    if app.tasks_overlay.visible {
-        render_tasks_overlay(frame, &app.tasks_overlay, size);
-    }
-
     // New help overlay
     if app.help_overlay.visible {
         render_help_overlay(frame, &app.help_overlay, size);
     } else if app.show_help {
         // Legacy fallback â€” render the simple help overlay
         render_simple_help_overlay(frame, size);
-    }
-
-    // History search overlay
-    if app.history_search_overlay.visible {
-        render_history_search_overlay(
-            frame,
-            &app.history_search_overlay,
-            &app.prompt_input.history,
-            size,
-        );
-    } else if let Some(ref hs) = app.history_search {
-        // Legacy history search rendering
-        render_legacy_history_search(frame, hs, app, size);
     }
 
     // Settings screen (highest-priority full-screen overlay) — routed through
@@ -653,24 +532,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         app.stats_dialog.render(frame, size);
     }
 
-    if app.mcp_view.visible {
-        render_mcp_view(&app.mcp_view, size, frame.buffer_mut());
-    }
-
-    if app.agents_menu.visible {
-        render_agents_menu(&app.agents_menu, size, frame.buffer_mut());
-    }
-
     if app.diff_viewer.is_visible() {
         app.diff_viewer.render(frame, size);
-    }
-
-    if app.paste_viewer.visible {
-        crate::paste_viewer::render_paste_viewer_buf(&app.paste_viewer, size, frame.buffer_mut());
-    }
-
-    if app.global_search.visible {
-        render_global_search(&app.global_search, size, frame.buffer_mut());
     }
 
     if app.feedback_survey.is_visible() {
@@ -684,29 +547,6 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     // Hooks config menu — routed through its DialogBehavior `render`.
     app.hooks_config_menu.render(frame, size);
 
-    // Overage credit upsell banner
-    if app.overage_upsell.visible {
-        let banner_h = app.overage_upsell.height();
-        if size.height > banner_h + 4 {
-            let banner_area = Rect { x: size.x, y: size.y, width: size.width, height: banner_h };
-            render_overage_upsell(&app.overage_upsell, banner_area, frame.buffer_mut());
-        }
-    }
-
-    // Memory update notification banner (bottom of message area)
-    if app.memory_update_notification.visible {
-        let notif_h = app.memory_update_notification.height();
-        if size.height > notif_h + 4 {
-            // Place at the bottom of the screen, just above the prompt bar area
-            let notif_y = size.y + size.height.saturating_sub(notif_h + 4);
-            let notif_area = Rect { x: size.x, y: notif_y, width: size.width, height: notif_h };
-            render_memory_update_notification(
-                &app.memory_update_notification,
-                notif_area,
-                frame.buffer_mut(),
-            );
-        }
-    }
 
     // Desktop upsell startup modal
     if app.desktop_upsell.is_visible() {
@@ -807,42 +647,9 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         app.export_dialog.render(frame, size);
     }
 
-    // Context visualization overlay
-    if app.context_viz.visible {
-        render_context_viz(
-            frame,
-            &app.context_viz,
-            size,
-            app.context_used_tokens,
-            app.context_window_size,
-            app.rate_limit_5h_pct,
-            app.rate_limit_7day_pct,
-            app.cost_usd,
-        );
-    }
-
     // MCP approval dialog — routed through DialogBehavior.
     if app.mcp_approval.is_visible() {
         app.mcp_approval.render(frame, size);
-    }
-
-    // Always show error modals on top of everything (highest priority)
-    if let Some(notif) = app.notifications.current() {
-        if notif.kind == NotificationKind::Error {
-            let is_welcome_screen = app.messages.is_empty()
-                && app.streaming_text.is_empty()
-                && app.streaming_thinking.is_empty()
-                && app.tool_use_blocks.is_empty();
-            render_error_modal(frame, size, notif, app.error_modal_scroll_offset, app.footer_right_column_area.get(), is_welcome_screen);
-            return; // Don't render other overlays/notifications when error modal is showing
-        }
-    }
-
-    let modal_active = is_modal_open(app);
-
-    // Render non-error notifications as toast banners (unless another modal is open)
-    if !modal_active && app.notifications.current().is_some() {
-        render_notification_banner(frame, &app.notifications, size);
     }
 
     // ---- Text selection highlight (topmost post-pass) ---------------------
@@ -1122,30 +929,6 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
     app.last_msg_area.set(msg_area);
 
     let lines = render_message_items(app, msg_area.width);
-
-    // Highlight search matches in transcript when global search is active
-    let lines = if app.global_search.visible && !app.global_search.query.is_empty() {
-        let query_lc = app.global_search.query.to_lowercase();
-        lines.into_iter().map(|mut item| {
-            if item.search_text.to_lowercase().contains(query_lc.as_str()) {
-                // Re-render the line with yellow highlight on matching spans
-                let highlighted_spans: Vec<Span<'static>> = item.line.spans.into_iter().map(|span| {
-                    if span.content.to_lowercase().contains(query_lc.as_str()) {
-                        Span::styled(
-                            span.content,
-                            span.style.bg(Color::Rgb(60, 50, 0)).fg(Color::Yellow),
-                        )
-                    } else {
-                        span
-                    }
-                }).collect();
-                item.line = ratatui::text::Line::from(highlighted_spans);
-            }
-            item
-        }).collect()
-    } else {
-        lines
-    };
 
     // Compute total virtual height and apply scroll clamping.
     // When auto_scroll is on we always show the tail; otherwise we respect
@@ -2961,87 +2744,6 @@ fn kb_line<'a>(key: &str, desc: &str) -> Line<'a> {
 }
 
 // -----------------------------------------------------------------------
-// Legacy history search overlay (used when history_search_overlay is not open)
-// -----------------------------------------------------------------------
-
-fn render_legacy_history_search(
-    frame: &mut Frame,
-    hs: &crate::app::HistorySearch,
-    app: &App,
-    area: Rect,
-) {
-    let dialog_width = 60u16.min(area.width.saturating_sub(4));
-    let visible_matches = 8usize;
-    let dialog_height =
-        (4 + visible_matches.min(hs.matches.len().max(1)) as u16).min(area.height.saturating_sub(4));
-    let dialog_area = crate::overlays::centered_rect(dialog_width, dialog_height, area);
-
-    frame.render_widget(Clear, dialog_area);
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::raw("  Search: "),
-        Span::styled(
-            hs.query.clone(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("\u{2588}", Style::default().fg(Color::White)),
-    ]));
-    lines.push(Line::from(""));
-
-    if hs.matches.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            "  (no matches)",
-            Style::default().fg(Color::DarkGray),
-        )]));
-    } else {
-        let start = hs.selected.saturating_sub(visible_matches / 2);
-        let end = (start + visible_matches).min(hs.matches.len());
-        let start = end.saturating_sub(visible_matches).min(start);
-
-        for (display_idx, &hist_idx) in hs.matches[start..end].iter().enumerate() {
-            let real_idx = start + display_idx;
-            let is_selected = real_idx == hs.selected;
-            let entry = app
-                .prompt_input
-                .history
-                .get(hist_idx)
-                .map(String::as_str)
-                .unwrap_or("");
-
-            // truncate_end is width-aware, cuts on char boundaries, and appends
-            // its own ellipsis. The old code did `String::truncate` on a raw
-            // byte index (panics mid-codepoint) after a `usize` subtraction that
-            // could underflow-panic on a narrow terminal (#221).
-            let truncated = truncate_end(entry, (dialog_width as usize).saturating_sub(6));
-
-            let (prefix, style) = if is_selected {
-                (
-                    "  \u{25BA} ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                ("    ", Style::default().fg(Color::White))
-            };
-            lines.push(Line::from(vec![
-                Span::raw(prefix),
-                Span::styled(truncated, style),
-            ]));
-        }
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" History Search (Esc to cancel) ")
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let para = Paragraph::new(lines).block(block);
-    frame.render_widget(para, dialog_area);
-}
-
-// -----------------------------------------------------------------------
 // Complete status line (T2-8)
 // -----------------------------------------------------------------------
 
@@ -3451,27 +3153,6 @@ mod tool_block_tests {
         assert!(joined.contains("[ ] Wire adapter"), "pending marker: {joined:?}");
         // The raw result-preview string must NOT leak into the checklist view.
         assert!(!joined.contains("Todo list updated"), "preview suppressed: {joined:?}");
-    }
-
-    #[test]
-    fn legacy_history_search_narrow_multibyte_no_panic() {
-        use crate::app::{App, HistorySearch};
-        use claurst_core::config::Config;
-        use claurst_core::cost::CostTracker;
-        use ratatui::{backend::TestBackend, Terminal};
-
-        let mut app = App::new(Config::default(), CostTracker::new());
-        app.prompt_input.history = vec!["\u{4f60}\u{597d}\u{4e16}\u{754c}".repeat(6)]; // wide CJK
-        let mut hs = HistorySearch::new();
-        hs.matches = vec![0];
-
-        // width 10 -> dialog_width 6 -> `dialog_width - 9` underflow-panicked
-        // pre-fix, and `String::truncate` on a byte index sliced the CJK entry
-        // mid-codepoint (#221). No panic == pass.
-        let mut terminal = Terminal::new(TestBackend::new(10, 12)).unwrap();
-        terminal
-            .draw(|frame| render_legacy_history_search(frame, &hs, &app, frame.area()))
-            .unwrap();
     }
 }
 

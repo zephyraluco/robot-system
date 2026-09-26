@@ -1,7 +1,6 @@
-//! Pointer input: mouse events, selection, context menu, paste viewer.
+//! Pointer input: mouse events, selection, context menu.
 
 use crate::dialogs::dialog::DialogBehavior;
-use crate::notifications::NotificationKind;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
 use tracing::debug;
 use super::App;
@@ -211,19 +210,7 @@ impl App {
                 };
 
                 if let Some(text) = text {
-                    if crate::message_copy::copy_to_clipboard(&text) {
-                        self.push_notification(
-                            NotificationKind::Info,
-                            format!("Copied {} chars to clipboard.", text.len()),
-                            Some(3),
-                        );
-                    } else {
-                        self.push_notification(
-                            NotificationKind::Warning,
-                            "Failed to copy to clipboard.".to_string(),
-                            Some(3),
-                        );
-                    }
+                    let _ = crate::message_copy::copy_to_clipboard(&text);
                     debug!("Copy action triggered, text: {} chars", text.len());
                 }
             }
@@ -286,49 +273,7 @@ impl App {
         let target_row = scroll + (row - text_start_y) as usize;
         let target_col = col.saturating_sub(rect.x + 2) as usize;
         self.prompt_input.set_cursor_at_visual(target_row, target_col, width);
-        // Clicking a [Pasted text #N ...] placeholder opens the read-only
-        // viewer so the body can be read without splicing it into the
-        // prompt; Alt+E remains the in-place expansion for editing.
-        if let Some((id, body)) = self.prompt_input.paste_ref_at(self.prompt_input.cursor) {
-            self.paste_viewer.open(id, &body);
-        }
         self.refresh_prompt_input();
-    }
-
-    /// Key handling while the paste viewer modal is open.
-    pub(super) fn handle_paste_viewer_key(&mut self, key: crossterm::event::KeyEvent) {
-        use crossterm::event::{KeyCode, KeyModifiers};
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.paste_viewer.close(),
-            KeyCode::Up | KeyCode::Char('k') => self.paste_viewer.scroll_up(1),
-            KeyCode::Down | KeyCode::Char('j') => self.paste_viewer.scroll_down(1),
-            KeyCode::PageUp => self.paste_viewer.page_up(),
-            KeyCode::PageDown => self.paste_viewer.page_down(),
-            KeyCode::Home | KeyCode::Char('g') => self.paste_viewer.scroll_to_top(),
-            KeyCode::End | KeyCode::Char('G') => self.paste_viewer.scroll_to_bottom(),
-            // Alt+E from inside the viewer: same in-place expansion as on the
-            // placeholder itself, then close (the body now lives in the
-            // prompt buffer).
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
-                let id = self.paste_viewer.paste_id;
-                self.paste_viewer.close();
-                self.expand_paste_ref_by_id(id);
-            }
-            _ => {}
-        }
-    }
-
-    /// Expand the `[Pasted text #N ...]` placeholder with the given id, if it
-    /// is still present in the prompt buffer with a stored body.
-    pub(super) fn expand_paste_ref_by_id(&mut self, id: u32) {
-        let target =
-            claurst_core::prompt_history::parse_references_with_positions(&self.prompt_input.text)
-                .into_iter()
-                .find(|(rid, matched, _)| *rid == id && matched.starts_with("[Pasted text #"));
-        if let Some((_, _, start)) = target {
-            self.prompt_input.expand_paste_ref_at(start);
-            self.refresh_prompt_input();
-        }
     }
 
     pub fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
@@ -340,17 +285,6 @@ impl App {
         // Keyboard scrolling (PageUp/PageDown, etc.) is handled elsewhere and is
         // unaffected by this gate.
         if !self.config.mouse_capture_enabled() {
-            return;
-        }
-
-        // The paste viewer modal swallows mouse input: the wheel scrolls its
-        // body, everything else is inert (Esc/q close it).
-        if self.paste_viewer.visible {
-            match mouse_event.kind {
-                MouseEventKind::ScrollUp => self.paste_viewer.scroll_up(3),
-                MouseEventKind::ScrollDown => self.paste_viewer.scroll_down(3),
-                _ => {}
-            }
             return;
         }
 
@@ -424,12 +358,6 @@ impl App {
                 self.close_secondary_views();
                 self.focus = FocusTarget::Input;
             }
-            return;
-        }
-
-        // Non-DialogCore overlays (context viz, …) — legacy behavior: absorb
-        // clicks so they never reach the transcript.
-        if self.context_viz.visible {
             return;
         }
 
@@ -634,14 +562,7 @@ impl App {
                     // Auto-copy finalized selection to clipboard.
                     let sel_text = self.selection_text.borrow().clone();
                     if !sel_text.is_empty() {
-                        let copied = crate::image_paste::write_clipboard_text(&sel_text);
-                        if copied {
-                            self.push_notification(
-                                NotificationKind::Info,
-                                "Copied to clipboard".to_string(),
-                                Some(1),
-                            );
-                        }
+                        let _ = crate::image_paste::write_clipboard_text(&sel_text);
                     }
                 }
             }

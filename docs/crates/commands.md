@@ -4,7 +4,7 @@
 
 ## 1. 定位
 
-Claude Code 风格的 **slash 命令系统**（`/help`、`/compact`、`/model`、`/config`、`/cost` 等 **102 个**注册命令）+ **顶层 named command 框架**（`claurst agents` 等），以 `SlashCommand` trait 为核心，被 CLI 交互循环和 named-command fast-path 调用。
+Claude Code 风格的 **slash 命令系统**（`/help`、`/compact`、`/model`、`/config`、`/cost` 等 **102 个**注册命令）+ **顶层 named command 框架**（`claurst branch` 等），以 `SlashCommand` trait 为核心，被 CLI 交互循环和 named-command fast-path 调用。
 
 ## 2. 依赖
 

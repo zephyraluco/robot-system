@@ -62,55 +62,6 @@ pub enum ContextMenuItem {
     Fork,
 }
 
-/// State for the Go to Line dialog (Ctrl+G in message pane).
-#[derive(Debug, Clone)]
-pub struct GoToLineDialog {
-    /// Input field for line number.
-    pub input: String,
-    /// Whether the dialog is currently active.
-    pub active: bool,
-    /// Total number of lines (for validation feedback).
-    pub total_lines: usize,
-}
-
-impl Default for GoToLineDialog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GoToLineDialog {
-    pub fn new() -> Self {
-        Self {
-            input: String::new(),
-            active: false,
-            total_lines: 0,
-        }
-    }
-
-    pub fn open(&mut self, total_lines: usize) {
-        self.input.clear();
-        self.active = true;
-        self.total_lines = total_lines;
-    }
-
-    pub fn close(&mut self) {
-        self.active = false;
-        self.input.clear();
-    }
-
-    /// Parse the input as a line number (1-indexed).
-    /// Returns None if invalid or out of range.
-    pub fn parse_line_number(&self) -> Option<usize> {
-        let line_num: usize = self.input.trim().parse().ok()?;
-        if line_num >= 1 && line_num <= self.total_lines {
-            Some(line_num)
-        } else {
-            None
-        }
-    }
-}
-
 /// Status of an active or completed tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -138,61 +89,6 @@ pub struct TurnMetadata {
     pub agent_mode: Option<String>,
     pub duration: Option<String>,
     pub interrupted: bool,
-}
-
-/// State for Ctrl+R history search mode (legacy inline struct, kept for test
-/// compatibility — the overlay version lives in `overlays::HistorySearchOverlay`).
-#[derive(Debug, Clone)]
-pub struct HistorySearch {
-    pub query: String,
-    /// Indices into `input_history` that match the current query.
-    pub matches: Vec<usize>,
-    /// Which match is currently highlighted.
-    pub selected: usize,
-}
-
-impl Default for HistorySearch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HistorySearch {
-    pub fn new() -> Self {
-        Self {
-            query: String::new(),
-            matches: Vec::new(),
-            selected: 0,
-        }
-    }
-
-    /// Re-compute matches against the given history slice.
-    pub fn update_matches(&mut self, history: &[String]) {
-        let q = self.query.to_lowercase();
-        self.matches = history
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| {
-                if s.to_lowercase().contains(&q) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // Clamp selected to valid range
-        if !self.matches.is_empty() && self.selected >= self.matches.len() {
-            self.selected = self.matches.len() - 1;
-        }
-    }
-
-    /// Return the currently selected history entry, if any.
-    pub fn current_entry<'a>(&self, history: &'a [String]) -> Option<&'a str> {
-        self.matches
-            .get(self.selected)
-            .and_then(|&i| history.get(i))
-            .map(String::as_str)
-    }
 }
 
 /// Which area of the TUI currently has keyboard focus.

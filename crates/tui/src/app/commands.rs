@@ -2,7 +2,6 @@
 
 use claurst_core::config::Theme;
 use claurst_core::types::Role;
-use crate::notifications::NotificationKind;
 use crate::overlays::HelpEntry;
 use super::App;
 use super::run::open_file_externally;
@@ -11,7 +10,6 @@ use super::try_copy_to_clipboard;
 pub(super) const PROMPT_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("advisor", "Set or unset the server-side advisor model"),
     ("agent", "List available agents or show agent details"),
-    ("agents", "Browse agent definitions and active agents"),
     ("changes", "Inspect changes from the current session"),
     ("clear", "Clear the conversation transcript"),
     ("compact", "Compact the conversation context"),
@@ -76,7 +74,7 @@ pub(super) fn help_command_category(name: &str) -> &'static str {
         "config" | "settings" | "theme" | "keybindings" | "hooks" | "mcp" | "import-config" => {
             "Workspace"
         }
-        "agent" | "agents" | "memory" | "plugin" | "survey" => "Tools",
+        "agent" | "memory" | "plugin" | "survey" => "Tools",
         "session" | "resume" | "rename" | "fork" | "clear" | "new" | "move" | "compact"
         | "quit" | "exit" => "Session",
         _ => "Commands",
@@ -107,7 +105,6 @@ impl App {
 
     pub fn intercept_slash_command(&mut self, cmd: &str) -> bool {
         self.close_secondary_views();
-        self.dismiss_error_notifications();
         match cmd {
             "config" | "settings" => {
                 self.settings_screen.open();
@@ -128,15 +125,6 @@ impl App {
                 self.stats_dialog.open();
                 true
             }
-            "mcp" => {
-                let servers = self.load_mcp_servers();
-                self.mcp_view.open(servers);
-                true
-            }
-            "agents" => {
-                self.open_agents_menu();
-                true
-            }
             "diff" | "review" => {
                 let root = self.project_root();
                 self.diff_viewer.open(&root);
@@ -146,10 +134,6 @@ impl App {
                 let root = self.project_root();
                 self.refresh_turn_diff_from_history();
                 self.diff_viewer.open_turn(&root);
-                true
-            }
-            "search" | "find" => {
-                self.global_search.open();
                 true
             }
             "survey" => {
@@ -246,32 +230,16 @@ impl App {
                 false
             }
             "copy" => {
-                // Copy last assistant message to clipboard. Attempt arboard; fall back to notification.
-                let last = self.messages.iter().rev()
+                // Copy the last assistant message to the clipboard
+                // (xclip/xsel/pbcopy/clip.exe under the hood).
+                if let Some(text) = self
+                    .messages
+                    .iter()
+                    .rev()
                     .find(|m| m.role == Role::Assistant)
-                    .map(|m| m.get_all_text());
-                if let Some(text) = last {
-                    // Try xclip/xsel/pbcopy/clip.exe for clipboard; fall back to notification.
-                    let copied = try_copy_to_clipboard(&text);
-                    if copied {
-                        self.push_notification(
-                            NotificationKind::Info,
-                            "Copied to clipboard.".to_string(),
-                            Some(3),
-                        );
-                    } else {
-                        self.push_notification(
-                            NotificationKind::Info,
-                            format!("Last response: {} chars (clipboard unavailable)", text.len()),
-                            Some(5),
-                        );
-                    }
-                } else {
-                    self.push_notification(
-                        NotificationKind::Warning,
-                        "No assistant message to copy.".to_string(),
-                        Some(3),
-                    );
+                    .map(|m| m.get_all_text())
+                {
+                    let _ = try_copy_to_clipboard(&text);
                 }
                 true
             }
@@ -310,16 +278,8 @@ impl App {
                 self.stats_dialog.open();
                 true
             }
-            "rewind" => {
-                self.open_rewind_flow();
-                true
-            }
             "export" => {
                 self.export_dialog.open();
-                true
-            }
-            "context" => {
-                self.context_viz.toggle();
                 true
             }
             "rename" => {

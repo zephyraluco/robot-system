@@ -1,7 +1,6 @@
-//! Transcript operations: add/replace/push, notifications, scroll.
+//! Transcript operations: add/replace/push, scroll.
 
 use claurst_core::types::{Message, Role};
-use crate::notifications::NotificationKind;
 use super::App;
 use super::types::{SystemAnnotation, SystemMessageStyle};
 
@@ -38,15 +37,6 @@ impl App {
 
     /// Push a synthetic system annotation into the conversation pane.
     /// It will appear after the current last message.
-    /// Push a notification and, for Error-kind notifications, reset the error
-    /// modal scroll offset so a newly arrived error is always shown from the top.
-    pub fn push_notification(&mut self, kind: NotificationKind, msg: String, duration_secs: Option<u64>) {
-        if kind == NotificationKind::Error {
-            self.error_modal_scroll_offset = 0;
-        }
-        self.notifications.push(kind, msg, duration_secs);
-    }
-
     pub fn push_system_message(&mut self, text: String, style: SystemMessageStyle) {
         self.system_annotations.push(SystemAnnotation {
             after_index: self.messages.len(),
@@ -71,41 +61,6 @@ impl App {
     pub fn invalidate_transcript(&self) {
         self.transcript_version
             .set(self.transcript_version.get().wrapping_add(1));
-    }
-
-    /// Check current token usage and push token warning notifications as
-    /// appropriate.  Call this after updating `token_count`.
-    pub fn check_token_warnings(&mut self) {
-        let window =
-            claurst_query::context_window_for_model(&self.model_name) as u32;
-        if window == 0 {
-            return;
-        }
-        let pct = (self.token_count as f64 / window as f64 * 100.0) as u8;
-
-        // Only escalate — never repeat a threshold already shown.
-        if pct >= 100 && self.token_warning_threshold_shown < 100 {
-            self.token_warning_threshold_shown = 100;
-            self.push_notification(
-                NotificationKind::Error,
-                "Context window full. Running auto-compact\u{2026}".to_string(),
-                None,
-            );
-        } else if pct >= 95 && self.token_warning_threshold_shown < 95 {
-            self.token_warning_threshold_shown = 95;
-            self.push_notification(
-                NotificationKind::Error,
-                "Context window 95% full! Run /compact now.".to_string(),
-                None, // persistent until dismissed
-            );
-        } else if pct >= 80 && self.token_warning_threshold_shown < 80 {
-            self.token_warning_threshold_shown = 80;
-            self.push_notification(
-                NotificationKind::Warning,
-                "Context window 80% full. Consider /compact.".to_string(),
-                Some(30),
-            );
-        }
     }
 
     /// Take the current input buffer, push it to history, and return it.

@@ -5,7 +5,6 @@ use std::io::Stdout;
 use claurst_core::types::Message;
 use claurst_core::{sample_completion_verb, sample_spinner_verb};
 use claurst_query::QueryEvent;
-use crate::notifications::NotificationKind;
 use crate::render;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
@@ -105,14 +104,6 @@ impl App {
 
     /// Process a query event from the agentic loop.
     pub fn handle_query_event(&mut self, event: QueryEvent) {
-        // Auto-dismiss error modal when assistant responds
-        match &event {
-            QueryEvent::Stream(_) | QueryEvent::TurnComplete { .. } => {
-                self.dismiss_error_notifications();
-            }
-            _ => {}
-        }
-
         match event {
             QueryEvent::Stream(stream_evt) => {
                 if !self.is_streaming {
@@ -259,38 +250,9 @@ impl App {
                 self.streaming_thinking.clear();
                 self.invalidate_transcript();
                 let err_msg = format!("Error: {}", msg);
-                self.push_assistant_message(err_msg.clone());
-                self.push_notification(NotificationKind::Error, err_msg, None);
+                self.push_assistant_message(err_msg);
             }
-            QueryEvent::TokenWarning { state, pct_used } => {
-                // Push a notification for context window warnings (notification + threshold tracking).
-                use claurst_query::compact::TokenWarningState;
-
-                // Only escalate — never repeat a threshold already shown.
-                match state {
-                    TokenWarningState::Ok => {
-                        // Reset threshold tracking when back to normal
-                        self.token_warning_threshold_shown = 0;
-                    }
-                    TokenWarningState::Warning if self.token_warning_threshold_shown < 80 => {
-                        self.token_warning_threshold_shown = 80;
-                        self.push_notification(
-                            NotificationKind::Warning,
-                            format!("Context window {:.0}% full. Consider /compact.", pct_used * 100.0),
-                            Some(30),
-                        );
-                    }
-                    TokenWarningState::Critical if self.token_warning_threshold_shown < 95 => {
-                        self.token_warning_threshold_shown = 95;
-                        self.push_notification(
-                            NotificationKind::Error,
-                            format!("Context window {:.0}% full! Run /compact now.", pct_used * 100.0),
-                            None,
-                        );
-                    }
-                    _ => {}
-                }
-            }
+            QueryEvent::TokenWarning { .. } => {}
         }
 
         // Update token count from tracker.
@@ -472,8 +434,6 @@ impl App {
                             return Ok(None);
                         }
                         if should_submit {
-                            // Dismiss any active error modal when the user sends a message
-                            self.dismiss_error_notifications();
                             // Check if this is a slash command that should open a UI screen
                             if crate::input::is_slash_command(&self.prompt_input.text) {
                                 let slash_input = self.prompt_input.text.clone();
@@ -492,9 +452,7 @@ impl App {
                     }
                     Event::Paste(data)
                         if !self.is_streaming
-                            && self.permission_request.is_none()
-                            && !self.history_search_overlay.visible
-                            && self.history_search.is_none() =>
+                            && self.permission_request.is_none() =>
                     {
                         if self.any_modal_open() {
                             // A modal dialog owns all input: a visible text-entry

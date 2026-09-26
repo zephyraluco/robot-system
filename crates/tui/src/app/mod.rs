@@ -14,7 +14,7 @@ mod types;
 mod views;
 
 pub use types::{
-    ContextMenuKind, DisplayMessage, FocusTarget, HistorySearch,
+    ContextMenuKind, DisplayMessage, FocusTarget,
     RecentSession, SystemAnnotation, SystemMessageStyle, ToolStatus,
     ToolUseBlock, TurnMetadata, recent_session_label,
 };
@@ -27,32 +27,24 @@ use claurst_core::cost::CostTracker;
 use claurst_core::file_history::FileHistory;
 use claurst_core::keybindings::{KeybindingResolver, UserKeybindings};
 use claurst_core::types::Message;
-use crate::agents_view::AgentsMenuState;
 use crate::bridge_state::BridgeConnectionState;
-use crate::context_viz::ContextVizState;
 use crate::dialogs::dialog_select::{DialogSelectState, SelectItem};
 use crate::dialogs::{McpApprovalDialogState, PermissionRequest};
 use crate::dialogs::diff_viewer::DiffViewerState;
 use crate::dialogs::export_dialog::ExportDialogState;
 use crate::dialogs::import_config_dialog::ImportConfigDialogState;
-use crate::mcp_view::McpViewState;
 use crate::dialogs::model_picker::{EffortLevel, ModelPickerState};
-use crate::notifications::NotificationQueue;
-use crate::overlays::{
-    GlobalSearchState, HelpOverlay, HistorySearchOverlay,
-    MessageSelectorOverlay, RewindFlowOverlay,
-};
+use crate::overlays::HelpOverlay;
 use crate::plugin_views::PluginHintBanner;
 use crate::prompt_input::PromptInputState;
 use crate::dialogs::session_browser::SessionBrowserState;
 use crate::dialogs::settings_screen::SettingsScreen;
 use crate::dialogs::stats_dialog::StatsDialogState;
-use crate::tasks_overlay::TasksOverlay;
 use crate::dialogs::theme_screen::ThemeScreen;
 use ratatui::style::Color;
 use commands::{PROMPT_SLASH_COMMANDS, help_overlay_entries};
 use providers::{import_config_picker_items, provider_picker_items};
-use types::{ContextMenuState, GoToLineDialog};
+use types::ContextMenuState;
 
 /// Attempt to copy text to the system clipboard using platform CLI tools.
 /// Returns true if successful.
@@ -176,7 +168,6 @@ pub struct App {
     /// and tool list to match the newly-selected agent.
     pub agent_mode_changed: bool,
     pub agent_status: Vec<(String, String)>,
-    pub history_search: Option<HistorySearch>,
     pub keybindings: KeybindingResolver,
 
     // Cursor position within input (byte offset)
@@ -188,12 +179,6 @@ pub struct App {
     pub auto_scroll: bool,
     /// Count of messages that arrived while the user was scrolled up.
     pub new_messages_while_scrolled: usize,
-
-    // ---- Token warning tracking -------------------------------------------
-
-    /// Which threshold (0 = none, 80, 95, 100) was last notified so we only
-    /// show each banner once.
-    pub token_warning_threshold_shown: u8,
 
     // ---- Session timing ---------------------------------------------------
 
@@ -220,24 +205,12 @@ pub struct App {
     /// reuse cached layout between keystrokes.
     pub transcript_version: Cell<u64>,
 
-    // ---- New overlay / notification fields --------------------------------
+    // ---- New overlay fields ------------------------------------------------
 
     /// Full-screen help overlay (? / F1).
     pub help_overlay: HelpOverlay,
-    /// Ctrl+R history search overlay.
-    pub history_search_overlay: HistorySearchOverlay,
-    /// Global ripgrep search / quick-open overlay.
-    pub global_search: GlobalSearchState,
-    /// Message selector used by /rewind.
-    pub message_selector: MessageSelectorOverlay,
-    /// Multi-step rewind flow overlay.
-    pub rewind_flow: RewindFlowOverlay,
     /// Bridge connection state.
     pub bridge_state: BridgeConnectionState,
-    /// Active notification queue.
-    pub notifications: NotificationQueue,
-    /// Scroll offset for error modal text (in lines).
-    pub error_modal_scroll_offset: usize,
     /// Plugin hint banners.
     pub plugin_hints: Vec<PluginHintBanner>,
     /// Optional session title shown in the status bar.
@@ -277,28 +250,18 @@ pub struct App {
     pub theme_screen: ThemeScreen,
     /// Token/cost analytics dialog.
     pub stats_dialog: StatsDialogState,
-    /// MCP server browser and tool detail view.
-    pub mcp_view: McpViewState,
-    /// Agent definitions and active agent status overlay.
-    pub agents_menu: AgentsMenuState,
     /// Diff viewer overlay.
     pub diff_viewer: DiffViewerState,
-    /// Read-only viewer for [Pasted text #N ...] placeholders.
-    pub paste_viewer: crate::paste_viewer::PasteViewer,
     /// Session-quality feedback survey overlay.
     pub feedback_survey: crate::dialogs::feedback_survey::FeedbackSurveyState,
     /// Memory file selector overlay (AGENTS.md browser).
     pub memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState,
     /// Read-only hooks configuration browser.
     pub hooks_config_menu: crate::dialogs::hooks_config_menu::HooksConfigMenuState,
-    /// Overage credit upsell banner.
-    pub overage_upsell: crate::overage_upsell::OverageCreditUpsellState,
     /// Desktop app upsell startup dialog.
     pub desktop_upsell: crate::dialogs::desktop_upsell_startup::DesktopUpsellStartupState,
     /// Startup error dialog for malformed settings.json or AGENTS.md.
     pub invalid_config_dialog: crate::dialogs::invalid_config_dialog::InvalidConfigDialogState,
-    /// Memory update notification banner.
-    pub memory_update_notification: crate::memory_update_notification::MemoryUpdateNotificationState,
     /// MCP elicitation dialog (form requested by an MCP server).
     pub elicitation: crate::dialogs::elicitation_dialog::ElicitationDialogState,
     /// Model picker overlay (/model command).
@@ -307,12 +270,8 @@ pub struct App {
     pub session_browser: SessionBrowserState,
     /// Session branching overlay (Ctrl+B) — create and switch branches.
     pub session_branching: crate::dialogs::session_branching::SessionBranchingState,
-    /// Task progress overlay (Ctrl+T) — shows task status with toggle capability.
-    pub tasks_overlay: TasksOverlay,
     /// Export format picker dialog (/export).
     pub export_dialog: ExportDialogState,
-    /// Context window / rate limit visualization overlay (/context).
-    pub context_viz: ContextVizState,
     /// MCP server approval dialog.
     pub mcp_approval: McpApprovalDialogState,
     /// Project-defined MCP servers awaiting the user's approval decision.
@@ -326,8 +285,6 @@ pub struct App {
     pub mcp_session_trusted: std::collections::HashSet<String>,
     /// Project root used to key persistent MCP trust approvals.
     pub mcp_project_root: Option<std::path::PathBuf>,
-    /// Go to Line dialog (Ctrl+G in message pane).
-    pub go_to_line_dialog: GoToLineDialog,
     /// Bypass-permissions startup confirmation dialog.
     /// Shown at startup when --dangerously-skip-permissions was passed.
     /// User must explicitly accept or the session exits.
@@ -602,12 +559,10 @@ impl App {
             agent_mode_changed: false,
             accent_color: ACCENT_BUILD,
             agent_status: Vec::new(),
-            history_search: None,
             keybindings: KeybindingResolver::new(&user_keybindings),
             cursor_pos: 0,
             auto_scroll: true,
             new_messages_while_scrolled: 0,
-            token_warning_threshold_shown: 0,
             session_start: std::time::Instant::now(),
             rustle_current_pose: crate::rustle::RustlePose::Default,
             rustle_pose_until: None,
@@ -626,13 +581,7 @@ impl App {
                 overlay.populate_from_commands(help_overlay_entries());
                 overlay
             },
-            history_search_overlay: HistorySearchOverlay::new(),
-            global_search: GlobalSearchState::default(),
-            message_selector: MessageSelectorOverlay::new(),
-            rewind_flow: RewindFlowOverlay::new(),
             bridge_state: BridgeConnectionState::Disconnected,
-            notifications: NotificationQueue::new(),
-            error_modal_scroll_offset: 0,
             plugin_hints: Vec::new(),
             session_title: None,
             remote_session_url: None,
@@ -648,30 +597,22 @@ impl App {
             settings_screen: SettingsScreen::new(),
             theme_screen: ThemeScreen::new(),
             stats_dialog: StatsDialogState::new(),
-            mcp_view: McpViewState::new(),
-            agents_menu: AgentsMenuState::new(),
             diff_viewer: DiffViewerState::new(),
-            paste_viewer: crate::paste_viewer::PasteViewer::default(),
             feedback_survey: crate::dialogs::feedback_survey::FeedbackSurveyState::new(),
             memory_file_selector: crate::dialogs::memory_file_selector::MemoryFileSelectorState::new(),
             hooks_config_menu: crate::dialogs::hooks_config_menu::HooksConfigMenuState::new(),
-            overage_upsell: crate::overage_upsell::OverageCreditUpsellState::new(),
             desktop_upsell: crate::dialogs::desktop_upsell_startup::DesktopUpsellStartupState::new(),
             invalid_config_dialog: crate::dialogs::invalid_config_dialog::InvalidConfigDialogState::new(),
-            memory_update_notification: crate::memory_update_notification::MemoryUpdateNotificationState::new(),
             elicitation: crate::dialogs::elicitation_dialog::ElicitationDialogState::new(),
             model_picker: ModelPickerState::new(),
             session_browser: SessionBrowserState::new(),
             session_branching: crate::dialogs::session_branching::SessionBranchingState::new(),
-            tasks_overlay: TasksOverlay::new(),
             export_dialog: ExportDialogState::new(),
-            context_viz: ContextVizState::new(),
             mcp_approval: McpApprovalDialogState::new(),
             mcp_pending_project: std::collections::VecDeque::new(),
             mcp_prompting: None,
             mcp_session_trusted: std::collections::HashSet::new(),
             mcp_project_root: None,
-            go_to_line_dialog: GoToLineDialog::new(),
             bypass_permissions_dialog: crate::dialogs::bypass_permissions_dialog::BypassPermissionsDialogState::new(),
             bypass_permissions_dialog_shown: false,
             file_injection_dialog: crate::dialogs::file_injection_dialog::FileInjectionDialogState::new(),

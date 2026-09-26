@@ -25,7 +25,7 @@ use crate::{CommandContext, CommandResult};
 
 /// A top-level named command (`claurst <name> [args…]`).
 pub trait NamedCommand: Send + Sync {
-    /// Primary command name, e.g. `"agents"`.
+    /// Primary command name, e.g. `"branch"`.
     fn name(&self) -> &str;
 
     /// One-line description used in `claurst --help`.
@@ -37,91 +37,6 @@ pub trait NamedCommand: Send + Sync {
     /// Execute the command.  `args` is the slice of arguments *after* the
     /// command name itself.
     fn execute_named(&self, args: &[&str], ctx: &CommandContext) -> CommandResult;
-}
-
-// ---------------------------------------------------------------------------
-// agents
-// ---------------------------------------------------------------------------
-
-pub struct AgentsCommand;
-
-impl NamedCommand for AgentsCommand {
-    fn name(&self) -> &str { "agents" }
-    fn description(&self) -> &str { "Manage and configure sub-agents" }
-    fn usage(&self) -> &str { "claurst agents [list|create|edit|delete] [name]" }
-
-    fn execute_named(&self, args: &[&str], ctx: &CommandContext) -> CommandResult {
-        match args.first().copied().unwrap_or("list") {
-            "list" => {
-                // Load agent definitions from .claurst/agents/ in working dir
-                // (and home dir), using the same loader as the TUI agents view.
-                let defs = claurst_tui::agents_view::load_agent_definitions(&ctx.working_dir);
-
-                if defs.is_empty() {
-                    return CommandResult::Message(
-                        "Available Agents (0)\n\n\
-                         No custom agents defined. Create one with /new-agent\n\
-                         or run: claurst agents create <name>"
-                            .to_string(),
-                    );
-                }
-
-                let mut out = format!("Available Agents ({})\n\n", defs.len());
-                for def in &defs {
-                    let model_str = def.model.as_deref().unwrap_or("default model");
-                    if def.description.is_empty() {
-                        out.push_str(&format!(
-                            "  \u{2022} {} ({})\n",
-                            def.name, model_str
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "  \u{2022} {}: {}\n    Model: {}\n",
-                            def.name, def.description, model_str
-                        ));
-                    }
-                }
-                out.push_str("\nUse 'claurst agents create <name>' to add a new agent.");
-                CommandResult::Message(out)
-            }
-            "create" => {
-                let name = args.get(1).copied().unwrap_or("my-agent");
-                CommandResult::Message(format!(
-                    "Create a new agent by adding .claurst/agents/{name}.md\n\
-                     Template:\n\
-                     ---\n\
-                     name: {name}\n\
-                     description: <description>\n\
-                     model: claude-sonnet-4-6\n\
-                     ---\n\n\
-                     <agent instructions here>"
-                ))
-            }
-            "edit" => {
-                let name = match args.get(1).copied() {
-                    Some(n) => n,
-                    None => return CommandResult::Error(
-                        "Usage: claurst agents edit <name>".to_string(),
-                    ),
-                };
-                CommandResult::Message(format!(
-                    "Edit .claurst/agents/{name}.md in your editor to update the agent."
-                ))
-            }
-            "delete" => {
-                let name = match args.get(1).copied() {
-                    Some(n) => n,
-                    None => return CommandResult::Error(
-                        "Usage: claurst agents delete <name>".to_string(),
-                    ),
-                };
-                CommandResult::Message(format!(
-                    "Delete .claurst/agents/{name}.md to remove the agent."
-                ))
-            }
-            sub => CommandResult::Error(format!("Unknown agents subcommand: '{sub}'")),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,7 +1013,6 @@ impl NamedCommand for crate::StatsCommand {
 /// Return one instance of every registered named command.
 pub fn all_named_commands() -> Vec<Box<dyn NamedCommand>> {
     vec![
-        Box::new(AgentsCommand),
         Box::new(AddDirCommand),
         Box::new(BranchCommand),
         Box::new(TagCommand),
@@ -1165,7 +1079,6 @@ mod tests {
 
     #[test]
     fn test_find_named_command_found() {
-        assert!(find_named_command("agents").is_some());
         assert!(find_named_command("ide").is_some());
         assert!(find_named_command("branch").is_some());
         assert!(find_named_command("passes").is_some());
@@ -1178,28 +1091,7 @@ mod tests {
 
     #[test]
     fn test_find_named_command_case_insensitive() {
-        assert!(find_named_command("Agents").is_some());
         assert!(find_named_command("IDE").is_some());
-    }
-
-    #[test]
-    fn test_agents_list_returns_message() {
-        let ctx = make_ctx();
-        let cmd = AgentsCommand;
-        let result = cmd.execute_named(&[], &ctx);
-        assert!(matches!(result, CommandResult::Message(_)));
-    }
-
-    #[test]
-    fn test_agents_create_includes_name() {
-        let ctx = make_ctx();
-        let cmd = AgentsCommand;
-        let result = cmd.execute_named(&["create", "my-bot"], &ctx);
-        if let CommandResult::Message(msg) = result {
-            assert!(msg.contains("my-bot"));
-        } else {
-            panic!("Expected Message");
-        }
     }
 
     #[test]

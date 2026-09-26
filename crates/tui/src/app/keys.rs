@@ -1,15 +1,12 @@
 //! Keyboard input: normalization and key-event dispatch.
 
 use claurst_core::keybindings::{KeyContext, KeybindingResult, ParsedKeystroke};
-use crate::agents_view::AgentsRoute;
 use crate::dialogs::dialog::DialogBehavior as _;
-use crate::notifications::NotificationKind;
 use crate::input::normalize_char_with_shift;
-use crate::overlays::HistorySearchOverlay;
 use crate::prompt_input::VimMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::App;
-use super::types::{FocusTarget, HistorySearch};
+use super::types::FocusTarget;
 
 /// Map a character to its QWERTY Latin keyboard-position equivalent.
 ///
@@ -202,17 +199,6 @@ impl App {
             return false;
         }
 
-        // Dismiss error modal with Esc
-        if key.code == KeyCode::Esc && self.notifications.current_is_error() {
-            self.dismiss_error_notifications();
-            return false;
-        }
-
-
-        if self.global_search.visible {
-            return self.handle_global_search_key(key);
-        }
-
         // ---- Context menu handling (highest priority for menu navigation) ----
         if self.context_menu_state.is_some() {
             match key.code {
@@ -361,21 +347,17 @@ impl App {
         }
 
         if self.key_input_dialog.is_visible() {
-            // Ctrl/Super+V paste stays app-level — it needs the notification
-            // system (terminals that don't emit Event::Paste).
+            // Ctrl/Super+V paste stays app-level (some terminals don't emit
+            // Event::Paste).
             if key.code == KeyCode::Char('v')
                 && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
             {
                 if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if text.is_empty() {
-                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                    } else {
+                    if !text.is_empty() {
                         for ch in text.chars() {
                             self.key_input_dialog.insert_char(ch);
                         }
                     }
-                } else {
-                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
                 return false;
             }
@@ -398,8 +380,8 @@ impl App {
         // "Free" composite-provider setup dialog (collects any subset of the
         // free-tier upstream keys; min 1 to enable, more = better).
         // DialogCore-based: navigation / editing / Enter live in the dialog's
-        // `on_key`; Ctrl/Super+V paste stays app-level because it needs the
-        // notification system.
+        // `on_key`; Ctrl/Super+V paste stays app-level because some
+        // terminals don't emit Event::Paste.
         if self.free_mode_dialog.is_visible() {
             if key.code == KeyCode::Char('v')
                 && (key.modifiers.contains(KeyModifiers::CONTROL)
@@ -408,15 +390,11 @@ impl App {
                 // Paste clipboard text into the focused field (terminals
                 // that don't emit Event::Paste, e.g. Windows Terminal).
                 if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if text.is_empty() {
-                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                    } else {
+                    if !text.is_empty() {
                         for ch in text.chars() {
                             self.free_mode_dialog.insert_char(ch);
                         }
                     }
-                } else {
-                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
                 return false;
             }
@@ -440,21 +418,17 @@ impl App {
 
         // Custom provider dialog (URL + API key for OpenAI-compatible providers)
         if self.custom_provider_dialog.is_visible() {
-            // Ctrl/Super+V paste stays app-level — it needs the notification
-            // system (terminals that don't emit Event::Paste).
+            // Ctrl/Super+V paste stays app-level (some terminals don't emit
+            // Event::Paste).
             if key.code == KeyCode::Char('v')
                 && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
             {
                 if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if text.is_empty() {
-                        self.push_notification(NotificationKind::Warning, "Clipboard is empty".to_string(), Some(2));
-                    } else {
+                    if !text.is_empty() {
                         for ch in text.chars() {
                             self.custom_provider_dialog.insert_char(ch);
                         }
                     }
-                } else {
-                    self.push_notification(NotificationKind::Warning, "Could not read clipboard".to_string(), Some(2));
                 }
                 return false;
             }
@@ -575,50 +549,11 @@ impl App {
             return false;
         }
 
-        // Tasks overlay intercepts navigation and Esc
-        if self.tasks_overlay.visible {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.tasks_overlay.close(),
-                KeyCode::Up => self.tasks_overlay.select_prev(),
-                KeyCode::Down => self.tasks_overlay.select_next(),
-                KeyCode::Enter => {
-                    if let Some((task_id, new_status)) = self.tasks_overlay.cycle_and_persist_status() {
-                        self.status_message = Some(format!("Task {} → {}", task_id, new_status));
-                    }
-                }
-                _ => {}
-            }
-            return false;
-        }
-
         // Export dialog key handling
         if self.export_dialog.is_visible() {
             let out = self.export_dialog.handle_key(key);
             if out.is_confirmed() {
-                if let Some(path) = self.perform_export() {
-                    self.push_notification(
-                        NotificationKind::Info,
-                        format!("Exported to {}", path),
-                        Some(4),
-                    );
-                } else {
-                    self.push_notification(
-                        NotificationKind::Warning,
-                        "Export failed: could not write file.".to_string(),
-                        Some(4),
-                    );
-                }
-            }
-            return false;
-        }
-
-        // Context visualization overlay key handling
-        if self.context_viz.visible {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    self.context_viz.close();
-                }
-                _ => {}
+                let _ = self.perform_export();
             }
             return false;
         }
@@ -657,11 +592,6 @@ impl App {
             return false;
         }
 
-        if self.paste_viewer.visible {
-            self.handle_paste_viewer_key(key);
-            return false;
-        }
-
         if self.diff_viewer.is_visible() {
             // 'd' toggles the diff scope and needs the project root (on App).
             if key.code == KeyCode::Char('d') && key.modifiers.is_empty() {
@@ -671,15 +601,6 @@ impl App {
             }
             let _ = self.diff_viewer.handle_key(key);
             return false;
-        }
-
-        if self.agents_menu.visible {
-            self.handle_agents_menu_key(key);
-            return false;
-        }
-
-        if self.mcp_view.visible {
-            return self.handle_mcp_view_key(key);
         }
 
         if self.stats_dialog.is_visible() {
@@ -711,39 +632,14 @@ impl App {
         }
 
         // Privacy screen intercepts keys
-        // Rewind flow overlay intercepts keys first
-        if self.rewind_flow.visible {
-            return self.handle_rewind_flow_key(key);
-        }
-
         // Help overlay intercepts keys next
         if self.help_overlay.visible {
             return self.handle_help_overlay_key(key);
         }
 
-        // New history-search overlay
-        if self.history_search_overlay.visible {
-            return self.handle_history_search_overlay_key(key);
-        }
-
-        if self.global_search.visible {
-            return self.handle_global_search_key(key);
-        }
-
-        // Legacy history-search mode intercepts most keys
-        if self.history_search.is_some() {
-            return self.handle_history_search_key(key);
-        }
-
         // Permission dialog mode intercepts most keys
         if self.permission_request.is_some() {
             self.handle_permission_key(key);
-            return false;
-        }
-
-        // Notification dismiss
-        if key.code == KeyCode::Esc && !self.notifications.is_empty() {
-            self.notifications.dismiss_current();
             return false;
         }
 
@@ -755,22 +651,9 @@ impl App {
             }
         }
 
-        // Overage upsell dismiss
-        if key.code == KeyCode::Esc && self.overage_upsell.visible {
-            self.overage_upsell.dismiss();
-            return false;
-        }
-
-
         // Desktop upsell startup dialog
         if self.desktop_upsell.is_visible() {
             let _ = self.desktop_upsell.handle_key(key);
-            return false;
-        }
-
-        // Memory update notification dismiss
-        if key.code == KeyCode::Esc && self.memory_update_notification.visible {
-            self.memory_update_notification.dismiss();
             return false;
         }
 
@@ -825,15 +708,7 @@ impl App {
         {
             use crate::image_paste::{read_clipboard_image, read_clipboard_text, read_primary_text};
             if let Some(img) = read_clipboard_image() {
-                let label = img.label.clone();
-                let dims = img.dimensions;
                 self.prompt_input.add_image(img);
-                let msg = if let Some((w, h)) = dims {
-                    format!("Image attached: {} ({}x{})", label, w, h)
-                } else {
-                    format!("Image attached: {}", label)
-                };
-                self.push_notification(NotificationKind::Info, msg, Some(3));
             } else if let Some(text) = read_clipboard_text().or_else(read_primary_text) {
                 self.handle_paste_data(text);
                 self.refresh_prompt_input();
@@ -890,13 +765,10 @@ impl App {
                 let sel_text = self.selection_text.borrow().clone();
                 if self.selection_anchor.is_some() && !sel_text.is_empty() {
                     // Text is selected: copy to clipboard.
-                    let copied = crate::image_paste::write_clipboard_text(&sel_text);
+                    let _ = crate::image_paste::write_clipboard_text(&sel_text);
                     self.selection_anchor = None;
                     self.selection_focus = None;
                     *self.selection_text.borrow_mut() = String::new();
-                    if copied {
-                        self.push_notification(NotificationKind::Info, "Copied to clipboard".to_string(), Some(2));
-                    }
                 } else if self.is_streaming {
                     // Cancel streaming.
                     self.is_streaming = false;
@@ -921,26 +793,6 @@ impl App {
                 if self.prompt_input.is_empty() {
                     self.handle_exit_key_confirmation('d');
                 }
-            }
-
-            // ---- History search ----------------------------------------
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Open the new overlay-based history search
-                let overlay = HistorySearchOverlay::open(&self.prompt_input.history);
-                self.history_search_overlay = overlay;
-                // Also open legacy for backwards compat
-                let mut hs = HistorySearch::new();
-                hs.update_matches(&self.prompt_input.history);
-                self.history_search = Some(hs);
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.global_search.open();
-                self.refresh_global_search();
-            }
-
-            // ---- Tasks overlay (Ctrl+T) --------------------------------
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.tasks_overlay.toggle();
             }
 
             // ---- Help overlay ------------------------------------------
@@ -1138,8 +990,6 @@ impl App {
                 {
                     return false;
                 }
-                // Auto-dismiss all error notifications when user sends a message
-                self.dismiss_error_notifications();
                 // New user input: snap back to bottom.
                 self.auto_scroll = true;
                 self.new_messages_while_scrolled = 0;
@@ -1230,7 +1080,7 @@ impl App {
     pub(super) fn current_key_context(&self) -> KeyContext {
         if self.diff_viewer.is_visible() {
             KeyContext::DiffDialog
-        } else if self.agents_menu.visible || self.mcp_view.visible || self.stats_dialog.is_visible() {
+        } else if self.stats_dialog.is_visible() {
             KeyContext::Select
         } else if self.import_config_dialog.is_visible() {
             KeyContext::Confirmation
@@ -1238,90 +1088,14 @@ impl App {
             KeyContext::Settings
         } else if self.theme_screen.is_visible() {
             KeyContext::ThemePicker
-        } else if self.rewind_flow.visible {
-            KeyContext::Confirmation
         } else if self.help_overlay.visible {
             KeyContext::Help
-        } else if self.history_search_overlay.visible || self.history_search.is_some() {
-            KeyContext::HistorySearch
         } else if self.permission_request.is_some() {
             KeyContext::Confirmation
         } else if self.show_help {
             KeyContext::Help
         } else {
             KeyContext::Chat
-        }
-    }
-
-    pub(super) fn handle_mcp_view_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.mcp_view.close(),
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => self.mcp_view.switch_pane(),
-            KeyCode::Up => self.mcp_view.select_prev(),
-            KeyCode::Down => self.mcp_view.select_next(),
-            KeyCode::Backspace => self.mcp_view.pop_search_char(),
-            KeyCode::Char('e') => self.mcp_view.toggle_error_detail(),
-            KeyCode::Char('a')
-                if self.mcp_view.active_pane == crate::mcp_view::McpViewPane::ServerList =>
-            {
-                let selected_server = self
-                    .mcp_view
-                    .servers
-                    .get(self.mcp_view.selected_server)
-                    .map(|server| server.name.clone());
-                if let Some(server_name) = selected_server {
-                    self.pending_mcp_panel_auth = Some(server_name);
-                    self.mcp_view.close();
-                    self.status_message = Some("Starting MCP auth...".to_string());
-                }
-            }
-            KeyCode::Char('r') => {
-                self.pending_mcp_reconnect = true;
-                self.status_message = Some("Reconnecting MCP runtime...".to_string());
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty()
-                && self.mcp_view.active_pane != crate::mcp_view::McpViewPane::ServerList => {
-                    self.mcp_view.push_search_char(c);
-                }
-            _ => {}
-        }
-        false
-    }
-
-    pub(super) fn handle_agents_menu_key(&mut self, key: KeyEvent) {
-        if matches!(self.agents_menu.route, AgentsRoute::Editor(_)) {
-            match key.code {
-                KeyCode::Esc => self.agents_menu.go_back(),
-                KeyCode::Tab | KeyCode::Down => self.agents_menu.editor_next_field(),
-                KeyCode::BackTab | KeyCode::Up => self.agents_menu.editor_prev_field(),
-                KeyCode::Enter => self.agents_menu.editor_insert_newline(),
-                KeyCode::Backspace => self.agents_menu.editor_backspace(),
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    match self.agents_menu.save_editor() {
-                        Ok(msg) => self.status_message = Some(msg),
-                        Err(err) => {
-                            self.agents_menu.editor.error = Some(err.clone());
-                            self.agents_menu.editor.saved_message = None;
-                            self.status_message = Some(err);
-                        }
-                    }
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let ch = self.shift_normalize(ch, key.modifiers);
-                    self.agents_menu.editor_insert_char(ch);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => self.agents_menu.go_back(),
-            KeyCode::Up => self.agents_menu.select_prev(),
-            KeyCode::Down => self.agents_menu.select_next(),
-            KeyCode::Enter | KeyCode::Right => self.agents_menu.confirm_selection(),
-            KeyCode::Left => self.agents_menu.go_back(),
-            _ => {}
         }
     }
 
@@ -1357,152 +1131,7 @@ impl App {
         false
     }
 
-    pub(super) fn handle_history_search_overlay_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc => {
-                self.history_search_overlay.close();
-                self.history_search = None;
-            }
-            KeyCode::Enter => {
-                if let Some(entry) = self
-                    .history_search_overlay
-                    .current_entry(&self.prompt_input.history)
-                {
-                    self.set_prompt_text(entry.to_string());
-                }
-                self.history_search_overlay.close();
-                self.history_search = None;
-            }
-            KeyCode::Up => {
-                self.history_search_overlay.select_prev();
-                if let Some(hs) = self.history_search.as_mut() {
-                    let count = hs.matches.len();
-                    if count > 0 {
-                        if hs.selected == 0 {
-                            hs.selected = count - 1;
-                        } else {
-                            hs.selected -= 1;
-                        }
-                    }
-                }
-            }
-            KeyCode::Down => {
-                self.history_search_overlay.select_next();
-                if let Some(hs) = self.history_search.as_mut() {
-                    let count = hs.matches.len();
-                    if count > 0 {
-                        hs.selected = (hs.selected + 1) % count;
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                let history = self.prompt_input.history.clone();
-                self.history_search_overlay.pop_char(&history);
-                if let Some(hs) = self.history_search.as_mut() {
-                    hs.query.pop();
-                    hs.update_matches(&history);
-                }
-            }
-            // 'p' with no modifiers and an empty query = pin/unpin the selected entry.
-            // When the query is non-empty 'p' is treated as a filter character so
-            // the user can still search for prompts containing the letter 'p'.
-            KeyCode::Char('p')
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && self.history_search_overlay.query.is_empty() =>
-            {
-                self.history_search_overlay.toggle_pin();
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let c = self.shift_normalize(c, key.modifiers);
-                let history = self.prompt_input.history.clone();
-                self.history_search_overlay.push_char(c, &history);
-                if let Some(hs) = self.history_search.as_mut() {
-                    hs.query.push(c);
-                    hs.update_matches(&history);
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
-    pub(super) fn handle_rewind_flow_key(&mut self, key: KeyEvent) -> bool {
-        use crate::overlays::RewindStep;
-        match &self.rewind_flow.step {
-            RewindStep::Selecting => match key.code {
-                KeyCode::Esc => {
-                    self.rewind_flow.close();
-                }
-                KeyCode::Enter => {
-                    self.rewind_flow.confirm_selection();
-                }
-                KeyCode::Up => {
-                    self.rewind_flow.selector.select_prev();
-                }
-                KeyCode::Down => {
-                    self.rewind_flow.selector.select_next();
-                }
-                _ => {}
-            },
-            RewindStep::Confirming { .. } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(idx) = self.rewind_flow.accept_confirm() {
-                        // Truncate conversation to the selected message index.
-                        self.messages.truncate(idx);
-                        // Remove system annotations placed after the truncation point.
-                        self.system_annotations.retain(|a| a.after_index <= idx);
-                        self.push_notification(
-                            NotificationKind::Success,
-                            format!("Rewound to message #{}", idx),
-                            Some(4),
-                        );
-                    }
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    self.rewind_flow.reject_confirm();
-                }
-                _ => {}
-            },
-        }
-        false
-    }
-
-    pub(super) fn handle_global_search_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc => {
-                self.global_search.close();
-            }
-            KeyCode::Enter => {
-                if let Some(selected) = self.global_search.selected_ref() {
-                    self.set_prompt_text(selected);
-                }
-                self.global_search.close();
-            }
-            KeyCode::Up => self.global_search.select_prev(),
-            KeyCode::Down => self.global_search.select_next(),
-            KeyCode::Backspace => {
-                self.global_search.pop_char();
-                self.refresh_global_search();
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let c = self.shift_normalize(c, key.modifiers);
-                self.global_search.push_char(c);
-                self.refresh_global_search();
-            }
-            _ => {}
-        }
-        false
-    }
-
     pub(super) fn handle_exit_key_confirmation(&mut self, mut key_char: char) {
-        fn exit_message(key: char) -> &'static str {
-            if key == 'c' {
-                "Press Ctrl+C again to exit"
-            } else {
-                "Press Ctrl+D again to exit"
-            }
-        }
-
         // Check if we have an active warning within the timeout
         if let Some(warning_time) = self.last_exit_key_warning {
             if warning_time.elapsed().as_secs_f64() <= 2.0 {
@@ -1521,7 +1150,6 @@ impl App {
         }
 
         // Start new sequence (or show message for wrong key)
-        self.push_notification(NotificationKind::Info, exit_message(key_char).to_string(), Some(2));
         self.last_exit_key_warning = Some(std::time::Instant::now());
         self.exit_key_sequence_start = Some(key_char);
     }
@@ -1553,8 +1181,7 @@ impl App {
                         self.last_exit_key_warning = None;
                         self.exit_key_sequence_start = None;
                     } else {
-                        // First press or timeout expired: show exit confirmation.
-                        self.push_notification(NotificationKind::Info, "Press Ctrl+C again to exit".to_string(), Some(2));
+                        // First press or timeout expired: start the exit sequence.
                         self.last_exit_key_warning = Some(std::time::Instant::now());
                         self.exit_key_sequence_start = Some('c');
                     }
@@ -1569,16 +1196,11 @@ impl App {
             }
             "redraw" => false,
             "historySearch" => {
-                let overlay = HistorySearchOverlay::open(&self.prompt_input.history);
-                self.history_search_overlay = overlay;
-                let mut hs = HistorySearch::new();
-                hs.update_matches(&self.prompt_input.history);
-                self.history_search = Some(hs);
+                // Ctrl+R history search was removed.
                 false
             }
             "openSearch" => {
-                self.global_search.open();
-                self.refresh_global_search();
+                // Ctrl+P global search was removed.
                 false
             }
             "submit" => {
@@ -1711,46 +1333,10 @@ impl App {
                 self.help_overlay.close();
                 false
             }
-            "select" => {
-                // Legacy history search select
-                if let Some(hs) = self.history_search.as_ref() {
-                    if let Some(entry) = hs.current_entry(&self.prompt_input.history) {
-                        self.set_prompt_text(entry.to_string());
-                    }
-                }
-                self.history_search = None;
-                self.history_search_overlay.close();
-                false
-            }
-            "cancel" => {
-                self.history_search = None;
-                self.history_search_overlay.close();
-                false
-            }
-            "prevResult" => {
-                if let Some(hs) = self.history_search.as_mut() {
-                    let count = hs.matches.len();
-                    if count > 0 {
-                        if hs.selected == 0 {
-                            hs.selected = count - 1;
-                        } else {
-                            hs.selected -= 1;
-                        }
-                    }
-                }
-                self.history_search_overlay.select_prev();
-                false
-            }
-            "nextResult" => {
-                if let Some(hs) = self.history_search.as_mut() {
-                    let count = hs.matches.len();
-                    if count > 0 {
-                        hs.selected = (hs.selected + 1) % count;
-                    }
-                }
-                self.history_search_overlay.select_next();
-                false
-            }
+            "select" => false,
+            "cancel" => false,
+            "prevResult" => false,
+            "nextResult" => false,
             // ========== NEW KEYBINDING ACTIONS (Phase 1) ==========
             "clearLine" => {
                 // Ctrl+L: Clear the current input line (like bash Ctrl+L)
@@ -1866,59 +1452,6 @@ impl App {
         }
     }
 
-    /// Handle a key event while in legacy history-search mode.
-    pub(super) fn handle_history_search_key(&mut self, key: KeyEvent) -> bool {
-        let hs = match self.history_search.as_mut() {
-            Some(h) => h,
-            None => return false,
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.history_search = None;
-                self.history_search_overlay.close();
-            }
-            KeyCode::Enter => {
-                if let Some(entry) = hs.current_entry(&self.prompt_input.history) {
-                    self.set_prompt_text(entry.to_string());
-                }
-                self.history_search = None;
-                self.history_search_overlay.close();
-            }
-            KeyCode::Up => {
-                let count = hs.matches.len();
-                if count > 0 {
-                    if hs.selected == 0 {
-                        hs.selected = count - 1;
-                    } else {
-                        hs.selected -= 1;
-                    }
-                }
-            }
-            KeyCode::Down => {
-                let count = hs.matches.len();
-                if count > 0 {
-                    hs.selected = (hs.selected + 1) % count;
-                }
-            }
-            KeyCode::Backspace => {
-                hs.query.pop();
-                let history = self.prompt_input.history.clone();
-                if let Some(hs) = self.history_search.as_mut() {
-                    hs.update_matches(&history);
-                }
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                hs.query.push(c);
-                let history = self.prompt_input.history.clone();
-                if let Some(hs) = self.history_search.as_mut() {
-                    hs.update_matches(&history);
-                }
-            }
-            _ => {}
-        }
-        false
-    }
-
     /// Handle a key event while a permission dialog is active.
     ///
     /// Routed through the dialog's `DialogBehavior` pipeline: `Confirmed`
@@ -1982,8 +1515,6 @@ impl App {
     pub(super) fn prompt_can_accept_selection_paste(&self) -> bool {
         !self.is_streaming
             && self.permission_request.is_none()
-            && !self.history_search_overlay.visible
-            && self.history_search.is_none()
             && !matches!(
                 self.prompt_input.vim_mode,
                 crate::prompt_input::VimMode::Normal
@@ -2043,13 +1574,8 @@ impl App {
                     .and_then(|n| n.to_str())
                     .unwrap_or("image")
                     .to_string();
-                let img = PastedImage { path, label: label.clone(), dimensions: None };
+                let img = PastedImage { path, label, dimensions: None };
                 self.prompt_input.add_image(img);
-                self.push_notification(
-                    crate::notifications::NotificationKind::Info,
-                    format!("Image attached: {}", label),
-                    Some(3),
-                );
             } else {
                 // Non-image file: insert as an @mention so the path is visible
                 // but clearly marked as a file reference.
@@ -2109,8 +1635,6 @@ impl App {
         !self.is_streaming
             && self.permission_request.is_none()
             && !self.ask_user_dialog.is_visible()
-            && !self.history_search_overlay.visible
-            && self.history_search.is_none()
             && !self.settings_screen.is_visible()
             && !self.theme_screen.is_visible()
             && !self.custom_provider_dialog.is_visible()

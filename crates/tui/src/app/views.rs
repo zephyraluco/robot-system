@@ -1,17 +1,13 @@
-//! Overlay/dialog orchestration and MCP view state.
+//! Overlay/dialog orchestration.
 
 use std::sync::Arc;
 
-use crate::agents_view::{AgentInfo, AgentStatus};
 use crate::dialogs::export_dialog::ExportFormat;
-use crate::mcp_view::{McpServerView, McpToolView, McpViewStatus};
 use super::App;
 
 impl App {
     pub(super) fn close_secondary_views(&mut self) {
         self.stats_dialog.close();
-        self.mcp_view.close();
-        self.agents_menu.close();
         self.diff_viewer.close();
         self.feedback_survey.close();
         self.memory_file_selector.close();
@@ -19,9 +15,7 @@ impl App {
         self.model_picker.close();
         self.session_browser.close();
         self.session_branching.close();
-        self.tasks_overlay.close();
         self.export_dialog.dismiss();
-        self.context_viz.close();
         self.connect_dialog.close();
         self.import_config_picker.close();
         self.import_config_dialog.close();
@@ -36,25 +30,15 @@ impl App {
 
     pub fn any_modal_open(&self) -> bool {
         self.permission_request.is_some()
-            || self.rewind_flow.visible
-            || self.tasks_overlay.visible
             || self.help_overlay.visible
             || self.show_help
-            || self.history_search_overlay.visible
-            || self.history_search.is_some()
             || self.settings_screen.is_visible()
             || self.theme_screen.is_visible()
             || self.stats_dialog.is_visible()
-            || self.mcp_view.visible
-            || self.agents_menu.visible
             || self.diff_viewer.is_visible()
-            || self.paste_viewer.visible
-            || self.global_search.visible
             || self.feedback_survey.is_visible()
             || self.memory_file_selector.is_visible()
             || self.hooks_config_menu.is_visible()
-            || self.overage_upsell.visible
-            || self.memory_update_notification.visible
             || self.desktop_upsell.is_visible()
             || self.import_config_dialog.is_visible()
             || self.invalid_config_dialog.is_visible()
@@ -74,17 +58,9 @@ impl App {
             || self.session_browser.is_visible()
             || self.session_branching.is_visible()
             || self.export_dialog.is_visible()
-            || self.context_viz.visible
             || self.mcp_approval.is_visible()
             || self.file_injection_dialog.is_visible()
             || self.context_menu_state.is_some()
-    }
-
-    pub(super) fn dismiss_error_notifications(&mut self) {
-        while self.notifications.current_is_error() {
-            self.notifications.dismiss_current();
-        }
-        self.error_modal_scroll_offset = 0;
     }
 
     /// Perform the export based on the selected format. Returns the path written.
@@ -117,173 +93,9 @@ impl App {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     }
-
-    pub(super) fn refresh_global_search(&mut self) {
-        let root = self.project_root();
-        self.global_search.run_search(&root);
-    }
-
-    pub(super) fn load_mcp_servers(&self) -> Vec<McpServerView> {
-        if let Some(manager) = self.mcp_manager.as_ref() {
-            let tool_defs = manager.all_tool_definitions();
-            return self
-                .config
-                .mcp_servers
-                .iter()
-                .map(|server| {
-                    let transport = server
-                        .url
-                        .as_ref()
-                        .map(|_| server.server_type.clone())
-                        .or_else(|| server.command.as_ref().map(|_| "stdio".to_string()))
-                        .unwrap_or_else(|| server.server_type.clone());
-
-                    let tools: Vec<McpToolView> = tool_defs
-                        .iter()
-                        .filter(|(server_name, _)| server_name == &server.name)
-                        .map(|(_, tool_def)| McpToolView {
-                            name: tool_def
-                                .name
-                                .strip_prefix(&format!("{}_", server.name))
-                                .unwrap_or(&tool_def.name)
-                                .to_string(),
-                            server: server.name.clone(),
-                            description: tool_def.description.clone(),
-                            input_schema: Some(tool_def.input_schema.to_string()),
-                        })
-                        .collect();
-
-                    let (status, error_message) = match manager.server_status(&server.name) {
-                        claurst_mcp::McpServerStatus::Connected { .. } => {
-                            (McpViewStatus::Connected, None)
-                        }
-                        claurst_mcp::McpServerStatus::Connecting => {
-                            (McpViewStatus::Connecting, None)
-                        }
-                        claurst_mcp::McpServerStatus::Disconnected { last_error } => {
-                            if last_error.is_some() {
-                                (McpViewStatus::Error, last_error)
-                            } else {
-                                (McpViewStatus::Disconnected, None)
-                            }
-                        }
-                        claurst_mcp::McpServerStatus::Failed { error, .. } => {
-                            (McpViewStatus::Error, Some(error))
-                        }
-                    };
-
-                    let catalog = manager.server_catalog(&server.name);
-                    McpServerView {
-                        name: server.name.clone(),
-                        transport,
-                        status,
-                        tool_count: catalog
-                            .as_ref()
-                            .map(|entry| entry.tool_count)
-                            .unwrap_or_else(|| tools.len()),
-                        resource_count: catalog
-                            .as_ref()
-                            .map(|entry| entry.resource_count)
-                            .unwrap_or(0),
-                        prompt_count: catalog
-                            .as_ref()
-                            .map(|entry| entry.prompt_count)
-                            .unwrap_or(0),
-                        resources: catalog
-                            .as_ref()
-                            .map(|entry| entry.resources.clone())
-                            .unwrap_or_default(),
-                        prompts: catalog
-                            .as_ref()
-                            .map(|entry| entry.prompts.clone())
-                            .unwrap_or_default(),
-                        error_message,
-                        tools,
-                    }
-                })
-                .collect();
-        }
-
-        self.config
-            .mcp_servers
-            .iter()
-            .map(|server| {
-                let transport = server
-                    .url
-                    .as_ref()
-                    .map(|_| server.server_type.clone())
-                    .or_else(|| server.command.as_ref().map(|_| "stdio".to_string()))
-                    .unwrap_or_else(|| server.server_type.clone());
-                let description = if let Some(url) = &server.url {
-                    format!("Endpoint: {}", url)
-                } else if let Some(command) = &server.command {
-                    let args = if server.args.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {}", server.args.join(" "))
-                    };
-                    format!("Command: {}{}", command, args)
-                } else {
-                    "Configured server".to_string()
-                };
-                McpServerView {
-                    name: server.name.clone(),
-                    transport,
-                    status: McpViewStatus::Disconnected,
-                    tool_count: 0,
-                    resource_count: 0,
-                    prompt_count: 0,
-                    resources: vec![],
-                    prompts: vec![],
-                    error_message: None,
-                    tools: vec![McpToolView {
-                        name: "connection".to_string(),
-                        server: server.name.clone(),
-                        description,
-                        input_schema: None,
-                    }],
-                }
-            })
-            .collect()
-    }
-
-    pub(super) fn open_agents_menu(&mut self) {
-        let root = self.project_root();
-        self.agents_menu.open(&root);
-        self.agents_menu.active_agents = self
-            .agent_status
-            .iter()
-            .enumerate()
-            .map(|(idx, (name, status))| AgentInfo {
-                id: format!("agent-{}", idx + 1),
-                name: name.clone(),
-                status: match status.as_str() {
-                    "running" => AgentStatus::Running,
-                    "waiting" | "waiting_for_tool" => AgentStatus::WaitingForTool,
-                    "complete" | "completed" | "done" => AgentStatus::Complete,
-                    "failed" | "error" => AgentStatus::Failed,
-                    _ => AgentStatus::Idle,
-                },
-                current_tool: None,
-                turns_completed: 0,
-                is_coordinator: false,
-                last_output: Some(status.clone()),
-                agent_role: crate::agents_view::AgentRole::Normal,
-                model_name: None,
-                cost_usd: 0.0,
-            })
-            .collect();
-    }
-
     pub fn attach_mcp_manager(&mut self, mcp_manager: Arc<claurst_mcp::McpManager>) {
         self.mcp_manager = Some(mcp_manager);
     }
-
-    pub fn refresh_mcp_view(&mut self) {
-        let servers = self.load_mcp_servers();
-        self.mcp_view.open(servers);
-    }
-
     pub fn take_pending_mcp_panel_auth(&mut self) -> Option<String> {
         self.pending_mcp_panel_auth.take()
     }

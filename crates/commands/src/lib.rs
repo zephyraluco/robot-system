@@ -516,7 +516,7 @@ fn command_category(name: &str) -> &'static str {
         | "teleport" | "move" => "Sessions & Remote",
         "help" | "exit" => "General",
         "think-back" | "thinkback-play" | "thinking" | "plan" | "tasks" => "AI & Thinking",
-        "copy" | "skills" | "agents" | "plugin" | "reload-plugins"
+        "copy" | "skills" | "plugin" | "reload-plugins"
         | "stickers" | "passes" | "desktop" | "mobile" | "btw" => "Tools & Extras",
         _ => "Other",
     }
@@ -1204,13 +1204,6 @@ pub fn all_commands() -> Vec<Box<dyn SlashCommand>> {
             slash_help: "Usage: /add-dir <path>",
         }),
         Box::new(NamedCommandAdapter {
-            slash_name: "agents",
-            target_name: "agents",
-            slash_aliases: &[],
-            slash_description: "Manage and configure sub-agents",
-            slash_help: "Usage: /agents [list|create|edit|delete] [name]",
-        }),
-        Box::new(NamedCommandAdapter {
             slash_name: "branch",
             target_name: "branch",
             slash_aliases: &[],
@@ -1595,7 +1588,7 @@ mod tests {
             "config", "version", "status", "diff", "memory", "hooks",
             "permissions", "plan", "tasks", "session", "login", "logout", "refresh",
             "usage", "plugin", "reload-plugins",
-            "add-dir", "agents", "branch", "tag",
+            "add-dir", "branch", "tag",
             "passes", "ide", "pr-comments", "desktop", "mobile",
             "install-github-app", "web-setup", "stickers",
         ];

@@ -96,73 +96,6 @@ use super::types::{ContextMenuItem, ContextMenuState};
     // ---- click-to-view paste placeholders ----
 
     #[test]
-    fn prompt_click_on_placeholder_opens_viewer() {
-        let mut app = make_app();
-        // Bottom pane as rendered: 1 status row (height > 2), then the top
-        // separator at y=21, text rows from y=22. Prefix "❯ " is 2 cells.
-        app.last_input_area.set(ratatui::layout::Rect { x: 0, y: 20, width: 80, height: 8 });
-        for c in "hi ".chars() {
-            app.prompt_input.insert_char(c);
-        }
-        app.prompt_input.paste("l1\nl2\nl3");
-        assert!(app.prompt_input.text.contains("[Pasted text #1"));
-
-        // Click on the separator row: nothing opens.
-        app.handle_prompt_click(10, 21);
-        assert!(!app.paste_viewer.visible);
-
-        // Click inside the placeholder on the first text row: the viewer
-        // opens read-only — the placeholder stays in the buffer and the body
-        // stays stored so submit-time expansion is unaffected.
-        app.handle_prompt_click(2 + 5, 22);
-        assert!(app.paste_viewer.visible);
-        assert_eq!(app.paste_viewer.paste_id, 1);
-        assert_eq!(app.paste_viewer.line_count(), 3);
-        assert!(app.prompt_input.text.contains("[Pasted text #1"));
-        assert!(!app.prompt_input.paste_contents.is_empty());
-    }
-
-    #[test]
-    fn paste_viewer_alt_e_expands_into_prompt() {
-        let mut app = make_app();
-        app.last_input_area.set(ratatui::layout::Rect { x: 0, y: 20, width: 80, height: 8 });
-        for c in "hi ".chars() {
-            app.prompt_input.insert_char(c);
-        }
-        app.prompt_input.paste("l1\nl2\nl3");
-        app.handle_prompt_click(2 + 5, 22);
-        assert!(app.paste_viewer.visible);
-
-        let alt_e = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('e'),
-            KeyModifiers::ALT,
-        );
-        app.handle_paste_viewer_key(alt_e);
-        assert!(!app.paste_viewer.visible);
-        assert_eq!(app.prompt_input.text, "hi l1\nl2\nl3");
-        assert!(app.prompt_input.paste_contents.is_empty());
-    }
-
-    #[test]
-    fn prompt_click_off_placeholder_moves_cursor_only() {
-        let mut app = make_app();
-        app.last_input_area.set(ratatui::layout::Rect { x: 0, y: 20, width: 80, height: 8 });
-        for c in "hello ".chars() {
-            app.prompt_input.insert_char(c);
-        }
-        app.prompt_input.paste("l1\nl2\nl3");
-        let text_before = app.prompt_input.text.clone();
-
-        // Click on "hello " before the placeholder: cursor moves, no viewer.
-        app.handle_prompt_click(2 + 1, 22);
-        assert_eq!(app.prompt_input.text, text_before);
-        assert_eq!(app.prompt_input.cursor, 1);
-        assert!(!app.paste_viewer.visible);
-    }
-
-    // ---- scroll_offset clamping (issue #223) ----
-
-    #[test]
     fn scroll_up_offset_clamped_to_max_scroll() {
         let mut app = make_app();
         // A render established that the transcript is 5 lines taller than the
@@ -467,7 +400,6 @@ use super::types::{ContextMenuItem, ContextMenuState};
     fn test_mcp_subcommand_is_not_intercepted() {
         let mut app = make_app();
         assert!(!app.intercept_slash_command_with_args("mcp", "auth mcphub"));
-        assert!(!app.mcp_view.visible);
     }
 
     #[test]

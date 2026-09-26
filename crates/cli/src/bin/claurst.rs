@@ -1784,7 +1784,7 @@ async fn run_interactive(
     use claurst_bridge::{BridgeOutbound, TuiBridgeEvent};
     use claurst_query::{QueryEvent, QueryOutcome};
     use claurst_tui::{
-        bridge_state::BridgeConnectionState, notifications::NotificationKind,
+        bridge_state::BridgeConnectionState,
         render::render_app, restore_terminal, setup_terminal, App,
         dialogs::device_auth_dialog::DeviceAuthEvent,
     };
@@ -2166,7 +2166,6 @@ async fn run_interactive(
     'main: loop {
         app.frame_count = app.frame_count.wrapping_add(1);
         app.tick_rustle_pose();
-        app.notifications.tick();
 
         // Process file injection dialog outcome (if any)
         if let Some((outcome, pending_input, pending_imgs)) = app.file_injection_dialog.take_outcome() {
@@ -2302,14 +2301,7 @@ async fn run_interactive(
                         // current turn finishes (issue #149).
                         let input = app.take_input();
                         if !input.is_empty() {
-                            let preview: String = input.chars().take(40).collect();
                             app.queued_messages.push_back(input);
-                            let total = app.queued_messages.len();
-                            app.notifications.push(
-                                claurst_tui::NotificationKind::Info,
-                                format!("Queued ({}): {}", total, preview),
-                                Some(3),
-                            );
                         }
                         continue;
                     }
@@ -2497,9 +2489,8 @@ async fn run_interactive(
                                 }
                                 Some(CommandResult::OpenRewindOverlay) => {
                                     app.replace_messages(messages.clone());
-                                    app.open_rewind_flow();
                                     app.status_message =
-                                        Some("Select a message to rewind to.".to_string());
+                                        Some("Rewind overlay is no longer available.".to_string());
                                 }
                                 Some(CommandResult::OpenHooksOverlay) => {
                                     // Open the 4-screen hooks configuration browser.
@@ -3174,10 +3165,7 @@ async fn run_interactive(
                             app.refresh_prompt_input();
                         }
                         // else: swallowed by the modal — do nothing.
-                    } else if app.permission_request.is_none()
-                        && !app.history_search_overlay.visible
-                        && app.history_search.is_none()
-                    {
+                    } else if app.permission_request.is_none() {
                         // Paste into the main prompt through the shared path
                         // so file-path/image pastes and the large-paste
                         // placeholder are handled uniformly.
@@ -3393,22 +3381,12 @@ async fn run_interactive(
             loop {
                 match runtime.tui_rx.try_recv() {
                     Ok(TuiBridgeEvent::Connected { session_url, session_id: conn_sid }) => {
-                        let short = if session_url.len() > 60 {
-                            format!("{}…", &session_url[..60])
-                        } else {
-                            session_url.clone()
-                        };
                         app.bridge_state = BridgeConnectionState::Connected {
                             session_url: session_url.clone(),
                             peer_count: 0,
                         };
                         app.remote_session_url = Some(session_url.clone());
                         cmd_ctx.remote_session_url = Some(session_url.clone());
-                        app.notifications.push(
-                            NotificationKind::Success,
-                            format!("Remote control active: {}", short),
-                            Some(5),
-                        );
                         // Persist the session URL into the saved session record.
                         session.remote_session_url = Some(session_url.clone());
                         session.updated_at = chrono::Utc::now();
@@ -3477,17 +3455,10 @@ async fn run_interactive(
                             });
                         }
                     }
-                    Ok(TuiBridgeEvent::Disconnected { reason }) => {
+                    Ok(TuiBridgeEvent::Disconnected { .. }) => {
                         app.bridge_state = BridgeConnectionState::Disconnected;
                         app.remote_session_url = None;
                         cmd_ctx.remote_session_url = None;
-                        if let Some(r) = reason {
-                            app.notifications.push(
-                                NotificationKind::Warning,
-                                format!("Bridge disconnected: {}", r),
-                                Some(5),
-                            );
-                        }
                         disconnect_bridge = true;
                         break;
                     }
@@ -3568,13 +3539,8 @@ async fn run_interactive(
                     }
                     Ok(TuiBridgeEvent::Error(msg)) => {
                         app.bridge_state = BridgeConnectionState::Failed {
-                            reason: msg.clone(),
+                            reason: msg,
                         };
-                        app.notifications.push(
-                            NotificationKind::Warning,
-                            format!("Bridge error: {}", msg),
-                            Some(5),
-                        );
                         disconnect_bridge = true;
                         break;
                     }
@@ -3586,11 +3552,6 @@ async fn run_interactive(
                         app.bridge_state = BridgeConnectionState::Disconnected;
                         app.remote_session_url = None;
                         cmd_ctx.remote_session_url = None;
-                        app.notifications.push(
-                            NotificationKind::Warning,
-                            "Remote control connection lost.".to_string(),
-                            Some(5),
-                        );
                         disconnect_bridge = true;
                         break;
                     }
@@ -3657,8 +3618,6 @@ async fn run_interactive(
         // Sync cost/token counters and expire transient UI state.
         app.cost_usd = app.cost_tracker.total_cost_usd();
         app.token_count = app.cost_tracker.total_tokens() as u32;
-        app.notifications.tick();
-        app.memory_update_notification.tick();
 
         // Drain background model-fetch results (non-blocking).
         if let Some(ref mut rx) = app.model_fetch_rx {
@@ -3840,11 +3799,6 @@ async fn run_interactive(
             }
         }
 
-        // Refresh task list if the overlay is visible.
-        if app.tasks_overlay.visible {
-            app.tasks_overlay.refresh_tasks(&claurst_tools::TASK_STORE);
-        }
-
         // Check if the background update task has reported a result.
         if app.update_available.is_none() {
             if let Ok(Some(version)) = update_rx.try_recv() {
@@ -3969,12 +3923,6 @@ async fn run_interactive(
 
                     app.device_auth_dialog
                         .set_code(user_code, verification_uri, device_code, interval);
-
-                    app.notifications.push(
-                        claurst_tui::NotificationKind::Info,
-                        "Code copied to clipboard & browser opened.".to_string(),
-                        Some(4),
-                    );
                 }
                 DeviceAuthEvent::GotBrowserUrl { url } => {
                     // Copy the URL to clipboard so the user can paste it even
@@ -3982,11 +3930,6 @@ async fn run_interactive(
                     // terminals, tty2, Wayland-without-xdg-open, etc.).
                     let _ = claurst_tui::try_copy_to_clipboard(&url);
                     app.device_auth_dialog.set_browser_url(url);
-                    app.notifications.push(
-                        claurst_tui::NotificationKind::Info,
-                        "Login URL copied to clipboard.".to_string(),
-                        Some(5),
-                    );
                 }
                 DeviceAuthEvent::TokenReceived(token) => {
                     app.device_auth_dialog.set_success(token);
@@ -4023,15 +3966,8 @@ async fn run_interactive(
         if task_finished {
             if let Some((handle, msgs_arc)) = current_query.take() {
                 // Get the outcome and handle errors
-                if let Ok(QueryOutcome::Error(err)) = handle.await {
-                    while app.notifications.current_is_error() {
-                        app.notifications.dismiss_current();
-                    }
-                    app.notifications.push(
-                        claurst_tui::notifications::NotificationKind::Error,
-                        err.to_string(),
-                        None,
-                    );
+                if let Ok(QueryOutcome::Error(_)) = handle.await {
+                    // The error is already shown in the transcript.
                 }
                 // Sync the updated conversation back to our local vector
                 messages = msgs_arc.lock().await.clone();
@@ -4204,9 +4140,6 @@ async fn run_interactive(
             tool_ctx.mcp_manager = new_mcp_manager.clone();
             app.mcp_manager = new_mcp_manager.clone();
             tools_arc = build_tools_with_mcp(new_mcp_manager.clone());
-            if app.mcp_view.visible {
-                app.refresh_mcp_view();
-            }
 
             let connected = new_mcp_manager
                 .as_ref()

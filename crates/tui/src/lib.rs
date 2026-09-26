@@ -67,8 +67,6 @@ static MOUSE_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(true);
 pub mod figures;
 /// Rustle mascot rendering.
 pub mod rustle;
-/// Context window and rate-limit visualization overlay (/context).
-pub mod context_viz;
 /// Clipboard image paste and Ctrl+V text paste.
 pub mod image_paste;
 /// Inline image rendering via the Kitty graphics protocol (with text fallback).
@@ -83,39 +81,25 @@ pub mod render;
 pub mod osc8;
 /// All TUI dialog components (built on `dialogs::dialog`'s `DialogCore`).
 pub mod dialogs;
-/// Notification / banner system.
-pub mod notifications;
-/// Help overlay, history search, message selector, rewind flow.
+/// Shared modal chrome and the help overlay.
 pub mod overlays;
 /// Bridge connection state and status badge.
 pub mod bridge_state;
 /// Plugin hint/recommendation UI.
 pub mod plugin_views;
 pub mod theme_colors;
-/// Read-only viewer for [Pasted text #N ...] placeholders.
-pub mod paste_viewer;
 /// Virtual scrollable list for efficient message rendering.
 pub mod virtual_list;
 /// Message type renderers (assistant, user, tool use, etc.).
 pub mod messages;
 /// Turn-aware transcript grouping and metadata helpers.
 pub mod transcript_turn;
-/// Agent definitions list and coordinator progress view.
-pub mod agents_view;
-/// MCP server management UI.
-pub mod mcp_view;
 /// Complete prompt input with vim mode, history, typeahead, and paste handling.
 pub mod prompt_input;
-/// Overage credit upsell banner (shown when user exceeds free-tier limit).
-pub mod overage_upsell;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
 pub mod message_copy;
-/// Memory update notification banner (shown after Claurst updates a AGENTS.md file).
-pub mod memory_update_notification;
 /// Effort-level picker dialog (/effort).
 pub mod effort_picker;
-/// Task progress overlay (Ctrl+T) — shows task status with inline toggle.
-pub mod tasks_overlay;
 /// File injection utilities for parsing @file references.
 pub mod file_injection;
 
@@ -124,19 +108,14 @@ pub mod file_injection;
 // ---------------------------------------------------------------------------
 
 pub use app::{App, try_copy_to_clipboard};
-pub use notifications::NotificationKind;
 pub use input::{is_slash_command, parse_slash_command};
 pub use dialogs::feedback_survey::{FeedbackSurveyState, FeedbackSurveyStage, FeedbackResponse};
 pub use dialogs::memory_file_selector::{MemoryFileSelectorState, MemoryFile, MemoryFileType};
 pub use dialogs::hooks_config_menu::{HooksConfigMenuState, HookEntry};
-pub use overage_upsell::{OverageCreditUpsellState, render_overage_upsell};
 pub use dialogs::desktop_upsell_startup::{DesktopUpsellStartupState, DesktopUpsellSelection};
-pub use memory_update_notification::{MemoryUpdateNotificationState, render_memory_update_notification, get_relative_memory_path};
 pub use dialogs::elicitation_dialog::{ElicitationDialogState, ElicitationField, ElicitationFieldKind, ElicitationResult};
 pub use dialogs::diff_viewer::{DiffViewerState, DiffPane, DiffType, load_git_diff, parse_unified_diff};
-pub use agents_view::{AgentInfo, AgentStatus, AgentsMenuState, AgentDefinition, render_agents_menu, render_coordinator_status, load_agent_definitions};
 pub use dialogs::stats_dialog::{StatsDialogState, StatsTab, load_stats};
-pub use mcp_view::{McpViewState, McpServerView, McpToolView, McpViewStatus, render_mcp_view};
 pub use prompt_input::{PromptInputState, VimMode, VimPendingState, VimOperator, VimFindKind, InputMode, render_prompt_input, handle_paste, compute_typeahead};
 pub use dialogs::model_picker::{ModelPickerState, ModelEntry, EffortLevel, model_supports_effort};
 pub use dialogs::session_browser::{SessionBrowserState, SessionBrowserMode, SessionEntry};
@@ -361,17 +340,15 @@ pub fn update_terminal_title(topic: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app::{App, HistorySearch, ToolStatus, ToolUseBlock};
+    use app::{App, ToolStatus, ToolUseBlock};
     use claurst_core::config::Config;
     use claurst_core::cost::CostTracker;
     use claurst_core::file_history::FileHistory;
     use claurst_core::types::{ContentBlock, Role, ToolResultContent};
     use dialogs::PermissionRequest;
-    use notifications::NotificationKind;
-    use ratatui::{backend::TestBackend, buffer::Buffer, layout::Rect, Terminal};
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
     use std::path::PathBuf;
     use std::sync::Arc;
-    use tempfile::tempdir;
 
     fn make_app() -> App {
         App::new(Config::default(), CostTracker::new())
@@ -452,79 +429,10 @@ mod tests {
     #[test]
     fn test_stats_slash_command_opens_dialog_and_closes_other_views() {
         let mut app = make_app();
-        app.mcp_view.open(vec![]);
-        app.agents_menu.visible = true;
 
         assert!(app.intercept_slash_command("stats"));
         assert!(app.stats_dialog.is_visible());
-        assert!(!app.mcp_view.visible);
-        assert!(!app.agents_menu.visible);
         assert!(!app.diff_viewer.is_visible());
-    }
-
-    #[test]
-    fn test_agents_slash_command_populates_active_agents() {
-        let mut app = make_app();
-        app.agent_status = vec![
-            ("Mendel".to_string(), "running".to_string()),
-            ("Aristotle".to_string(), "waiting".to_string()),
-            ("Plato".to_string(), "done".to_string()),
-        ];
-
-        assert!(app.intercept_slash_command("agents"));
-        assert!(app.agents_menu.visible);
-        assert_eq!(app.agents_menu.active_agents.len(), 3);
-        assert_eq!(app.agents_menu.active_agents[0].status, AgentStatus::Running);
-        assert_eq!(
-            app.agents_menu.active_agents[1].status,
-            AgentStatus::WaitingForTool
-        );
-        assert_eq!(app.agents_menu.active_agents[2].status, AgentStatus::Complete);
-    }
-
-    #[test]
-    fn test_agents_editor_ctrl_s_saves_new_agent() {
-        let temp = tempdir().unwrap();
-        let mut app = make_app();
-        app.agents_menu.open(temp.path());
-        app.agents_menu.open_editor(None);
-        app.agents_menu.editor.name = "Planner".to_string();
-        app.agents_menu.editor.description = "Plans complex work".to_string();
-        app.agents_menu.editor.prompt = "Help break work into steps.".to_string();
-
-        app.handle_key_event(ctrl(KeyCode::Char('s')));
-
-        let saved = temp.path().join(".claurst").join("agents").join("planner.md");
-        assert!(saved.exists());
-        let content = std::fs::read_to_string(saved).unwrap();
-        assert!(content.contains("name: Planner"));
-        assert!(content.contains("Help break work into steps."));
-        assert!(matches!(app.agents_menu.route, agents_view::AgentsRoute::Detail(_)));
-    }
-
-    #[test]
-    fn test_agents_editor_render_uses_live_editor_state() {
-        let temp = tempdir().unwrap();
-        let mut state = AgentsMenuState::new();
-        state.open(temp.path());
-        state.open_editor(None);
-        state.editor.name = "Builder".to_string();
-        state.editor.description = "Builds code".to_string();
-        state.editor.prompt = "Ship the feature.".to_string();
-
-        let area = Rect { x: 0, y: 0, width: 90, height: 24 };
-        let mut buf = Buffer::empty(area);
-        agents_view::render_agents_menu(&state, area, &mut buf);
-
-        let rendered = buf
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(rendered.contains("Builder"));
-        assert!(rendered.contains("Ship the feature."));
-        assert!(!rendered.contains("Edit the agent file directly"));
     }
 
     #[test]
@@ -762,32 +670,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_p_opens_global_search() {
-        let mut app = make_app();
-        app.handle_key_event(ctrl(KeyCode::Char('p')));
-        assert!(app.global_search.visible);
-    }
-
-    #[test]
-    fn test_global_search_enter_inserts_selected_ref() {
-        let mut app = make_app();
-        app.global_search.open();
-        app.global_search.results = vec![overlays::SearchResult {
-            file: "src/main.rs".to_string(),
-            line: 42,
-            col: 1,
-            text: "fn main() {}".to_string(),
-            context_before: Vec::new(),
-            context_after: Vec::new(),
-        }];
-        app.handle_key_event(key(KeyCode::Enter));
-
-        assert!(!app.global_search.visible);
-        assert_eq!(app.input, "src/main.rs:42");
-        assert_eq!(app.prompt_input.text, "src/main.rs:42");
-    }
-
-    #[test]
     fn test_render_app_shows_scrollable_banner_after_first_message() {
         // Once a conversation starts, the welcome box is no longer pinned as a
         // fixed header (issue #310): a compact banner leads the transcript (and
@@ -841,9 +723,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
 
-        assert!(rendered.contains("/agents"));
+        assert!(rendered.contains("/agent"));
         assert!(rendered.contains("[cmd]"));
-        assert!(rendered.contains("Browse agent definitions"));
+        assert!(rendered.contains("List available agents"));
     }
 
     #[test]
@@ -867,34 +749,6 @@ mod tests {
             .join("");
 
         assert!(!rendered.contains("Thinking..."));
-    }
-
-    #[test]
-    fn test_render_app_shows_footer_notification_instead_of_effort() {
-        let backend = TestBackend::new(120, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = make_app();
-        app.notifications.push(
-            NotificationKind::Warning,
-            "Update available! Run upgrade".to_string(),
-            Some(30),
-        );
-
-        terminal
-            .draw(|frame| crate::render::render_app(frame, &app))
-            .unwrap();
-
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<Vec<_>>()
-            .join("");
-
-        assert!(rendered.contains("Update available! Run upgrade"));
-        assert!(!rendered.contains("/effort"));
     }
 
     #[test]
@@ -1073,151 +927,6 @@ mod tests {
 
         app.handle_key_event(key(KeyCode::Esc));
         assert!(!app.stats_dialog.is_visible());
-    }
-
-    #[test]
-    fn test_mcp_view_keys_search_and_close() {
-        let mut app = make_app();
-        app.mcp_view.open(vec![McpServerView {
-            name: "filesystem".to_string(),
-            transport: "stdio".to_string(),
-            status: McpViewStatus::Connected,
-            tool_count: 1,
-            resource_count: 0,
-            prompt_count: 0,
-            resources: vec![],
-            prompts: vec![],
-            error_message: None,
-            tools: vec![McpToolView {
-                name: "read_file".to_string(),
-                server: "filesystem".to_string(),
-                description: "Read a file".to_string(),
-                input_schema: None,
-            }],
-        }]);
-        app.mcp_view.switch_pane();
-
-        app.handle_key_event(key(KeyCode::Char('r')));
-        assert_eq!(app.mcp_view.tool_search, "");
-        assert_eq!(
-            app.status_message.as_deref(),
-            Some("Reconnecting MCP runtime...")
-        );
-        app.handle_key_event(key(KeyCode::Char('f')));
-        assert_eq!(app.mcp_view.tool_search, "f");
-
-        app.handle_key_event(key(KeyCode::Backspace));
-        assert_eq!(app.mcp_view.tool_search, "");
-
-        app.handle_key_event(key(KeyCode::Esc));
-        assert!(!app.mcp_view.visible);
-    }
-
-    #[test]
-    fn test_mcp_view_render_shows_resources_and_prompts() {
-        let mut state = McpViewState::new();
-        state.open(vec![McpServerView {
-            name: "filesystem".to_string(),
-            transport: "stdio".to_string(),
-            status: McpViewStatus::Connected,
-            tool_count: 1,
-            resource_count: 2,
-            prompt_count: 1,
-            resources: vec!["workspace-root".to_string(), "project-config".to_string()],
-            prompts: vec!["summarize-workspace".to_string()],
-            error_message: None,
-            tools: vec![McpToolView {
-                name: "read_file".to_string(),
-                server: "filesystem".to_string(),
-                description: "Read a file".to_string(),
-                input_schema: None,
-            }],
-        }]);
-        state.switch_pane();
-        state.switch_pane();
-
-        let area = Rect { x: 0, y: 0, width: 120, height: 30 };
-        let mut buf = Buffer::empty(area);
-        mcp_view::render_mcp_view(&state, area, &mut buf);
-        let rendered = buf
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<Vec<_>>()
-            .join("");
-
-        assert!(rendered.contains("2 res"));
-        assert!(rendered.contains("1 prompts"));
-    }
-
-    #[test]
-    fn test_mcp_view_auth_key_queues_selected_server_panel_auth() {
-        let mut app = make_app();
-        app.mcp_view.open(vec![McpServerView {
-            name: "mcphub".to_string(),
-            transport: "http".to_string(),
-            status: McpViewStatus::Connected,
-            tool_count: 1,
-            resource_count: 0,
-            prompt_count: 0,
-            resources: vec![],
-            prompts: vec![],
-            error_message: None,
-            tools: vec![McpToolView {
-                name: "read_file".to_string(),
-                server: "mcphub".to_string(),
-                description: "Read a file".to_string(),
-                input_schema: None,
-            }],
-        }]);
-
-        let submit = app.handle_key_event(key(KeyCode::Char('a')));
-        assert!(!submit);
-        assert_eq!(app.prompt_input.text, "");
-        assert_eq!(app.take_pending_mcp_panel_auth().as_deref(), Some("mcphub"));
-        assert!(!app.mcp_view.visible);
-        assert_eq!(app.mcp_view.tool_search, "");
-    }
-
-    #[test]
-    fn test_mcp_view_auth_key_with_no_servers_is_safe_noop() {
-        let mut app = make_app();
-        app.mcp_view.open(vec![]);
-
-        let submit = app.handle_key_event(key(KeyCode::Char('a')));
-        assert!(!submit);
-        assert!(app.mcp_view.visible);
-        assert_eq!(app.prompt_input.text, "");
-        assert!(app.take_pending_mcp_panel_auth().is_none());
-    }
-
-    #[test]
-    fn test_mcp_view_auth_key_only_works_in_servers_pane() {
-        let mut app = make_app();
-        app.mcp_view.open(vec![McpServerView {
-            name: "mcphub".to_string(),
-            transport: "http".to_string(),
-            status: McpViewStatus::Connected,
-            tool_count: 1,
-            resource_count: 0,
-            prompt_count: 0,
-            resources: vec![],
-            prompts: vec![],
-            error_message: None,
-            tools: vec![McpToolView {
-                name: "read_file".to_string(),
-                server: "mcphub".to_string(),
-                description: "Read a file".to_string(),
-                input_schema: None,
-            }],
-        }]);
-        app.mcp_view.switch_pane();
-
-        let submit = app.handle_key_event(key(KeyCode::Char('a')));
-        assert!(!submit);
-        assert!(app.mcp_view.visible);
-        assert_eq!(app.mcp_view.tool_search, "a");
-        assert!(app.take_pending_mcp_panel_auth().is_none());
     }
 
     #[test]
@@ -1403,32 +1112,6 @@ mod tests {
         // Turn metadata uses the ▣ glyph, never the legacy ◆.
         assert!(!rendered.contains("◆"));
         assert!(rendered.contains("\u{25a3}"));
-    }
-
-    // ---- HistorySearch --------------------------------------------------
-
-    #[test]
-    fn test_history_search_matches() {
-        let history = vec![
-            "git commit".to_string(),
-            "git push".to_string(),
-            "cargo build".to_string(),
-        ];
-        let mut hs = HistorySearch::new();
-        hs.query = "git".to_string();
-        hs.update_matches(&history);
-        assert_eq!(hs.matches.len(), 2);
-        assert_eq!(hs.matches[0], 0);
-        assert_eq!(hs.matches[1], 1);
-    }
-
-    #[test]
-    fn test_history_search_no_matches() {
-        let history = vec!["hello".to_string()];
-        let mut hs = HistorySearch::new();
-        hs.query = "xyz".to_string();
-        hs.update_matches(&history);
-        assert!(hs.matches.is_empty());
     }
 
     // ---- PermissionRequest --------------------------------------------
