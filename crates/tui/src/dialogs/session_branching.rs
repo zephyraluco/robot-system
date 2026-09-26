@@ -135,11 +135,6 @@ impl SessionBranchingState {
         self.branches.get(self.selected_idx)
     }
 
-    /// Get a mutable reference to the currently selected branch, if any.
-    pub fn selected_branch_mut(&mut self) -> Option<&mut BranchInfo> {
-        self.branches.get_mut(self.selected_idx)
-    }
-
     /// Start creating a new branch from the current point.
     pub fn start_create_new(&mut self) {
         self.mode = BranchBrowserMode::CreateNew;

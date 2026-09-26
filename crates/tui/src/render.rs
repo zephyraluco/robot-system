@@ -1664,9 +1664,9 @@ fn render_system_annotation_lines(
 
     // Terminal failures get the red "API Error" block instead of the centred
     // rule below: the text is a multi-line provider message, so it needs the
-    // line-by-line body and the `[expand]` hint.
+    // line-by-line body, wrapped to the transcript width.
     if ann.style == SystemMessageStyle::Error {
-        lines.extend(crate::messages::render_system_api_error(&ann.text, None));
+        lines.extend(crate::messages::render_system_api_error(&ann.text, None, width));
         lines.push(Line::from(""));
         return;
     }
@@ -2044,8 +2044,6 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect, focused: bool) {
         app.accent_color,
         app.settings_screen.cursor_blink_enabled,
     );
-
-    render_prompt_token_estimate(frame.buffer_mut(), input_area, app);
 }
 
 /// Right-hand side of the model/mode row that sits above the prompt box.
@@ -2082,52 +2080,6 @@ fn prompt_row_right_line(app: &App, max_width: usize) -> Line<'static> {
         )]);
     }
     Line::from(Vec::<Span>::new())
-}
-
-/// Draw the token estimate for the current input in the prompt box's
-/// bottom-right corner.
-///
-/// The notification / hint slot lives on the model/mode row *above* the box
-/// (`prompt_row_right_line`), so this is the only overlay painted inside it. It
-/// is right-aligned and truncated to the box width: it never reflows the prompt
-/// text and hugs the box's right edge, matching the rule the bottom border
-/// draws. It only appears past 1000 characters of input.
-fn render_prompt_token_estimate(buf: &mut Buffer, area: Rect, app: &App) {
-    if area.width == 0 || area.height < 2 || app.prompt_input.text.len() <= 1000 {
-        return;
-    }
-
-    // The last row of the prompt area is the breathing row under the box's bottom
-    // rule; for tall (scrolling) inputs it is the rule itself.
-    let n = app.prompt_input.token_estimate;
-    // Format mirrors TS formatTokens: compact "1.3k" at ≥1000, raw below.
-    let text = if n >= 1000 {
-        let k = n as f64 / 1000.0;
-        // Suppress a trailing ".0" (2000 → "2k", 1300 → "1.3k").
-        if (k * 10.0).round() % 10.0 == 0.0 {
-            format!("~{}k", k as u64)
-        } else {
-            format!("~{:.1}k", k)
-        }
-    } else {
-        format!("~{}", n)
-    };
-
-    let w = UnicodeWidthStr::width(text.as_str()) as u16;
-    if w == 0 || w > area.width {
-        return;
-    }
-    let rect = Rect {
-        x: area.x + area.width - w,
-        y: area.y + area.height - 1,
-        width: w,
-        height: 1,
-    };
-    Paragraph::new(Line::from(vec![Span::styled(
-        text,
-        Style::default().fg(Color::DarkGray),
-    )]))
-    .render(rect, buf);
 }
 
 fn should_render_status_row(app: &App) -> bool {
@@ -2829,140 +2781,6 @@ fn kb_line<'a>(key: &str, desc: &str) -> Line<'a> {
 // Complete status line (T2-8)
 // -----------------------------------------------------------------------
 
-/// Complete status line data for rendering.
-#[derive(Debug, Clone, Default)]
-pub struct StatusLineData {
-    pub model: String,
-    pub tokens_used: u64,
-    pub tokens_total: u64,
-    pub cost_cents: f64,
-    pub compact_warning_pct: Option<f64>,  // None = no warning; Some(pct) = show warning
-    pub vim_mode: Option<String>,           // None = no vim mode; Some("NORMAL") etc.
-    pub bridge_connected: bool,
-    pub session_id: Option<String>,
-    pub worktree: Option<String>,
-    pub agent_badge: Option<String>,
-    pub rate_limit_pct_5h: Option<f64>,
-    pub rate_limit_pct_7d: Option<f64>,
-    /// Goal badge: Some("active · 5m · 3 turns") when a goal is running.
-    pub goal_badge: Option<String>,
-}
-
-pub fn render_full_status_line(data: &StatusLineData, area: Rect, buf: &mut ratatui::buffer::Buffer) {
-    use ratatui::{
-        style::{Color, Modifier, Style},
-        text::{Line, Span},
-        widgets::{Paragraph, Widget},
-    };
-
-    let mut spans = Vec::new();
-
-    // Model name
-    if !data.model.is_empty() {
-        spans.push(Span::styled(
-            format!(" {} ", data.model),
-            Style::default().fg(Color::Cyan),
-        ));
-        spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
-    }
-
-    // Context window
-    if data.tokens_total > 0 {
-        let pct = data.tokens_used as f64 / data.tokens_total as f64;
-        let ctx_color = if pct >= 0.95 { Color::Red } else if pct >= 0.80 { Color::Yellow } else { Color::Green };
-        let used_k = data.tokens_used / 1000;
-        let total_k = data.tokens_total / 1000;
-        spans.push(Span::styled(
-            format!("{}k/{}k ({:.0}%)", used_k, total_k, pct * 100.0),
-            Style::default().fg(ctx_color),
-        ));
-        spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
-    }
-
-    // Cost
-    if data.cost_cents > 0.0 {
-        spans.push(Span::styled(
-            format!("${:.2}", data.cost_cents / 100.0),
-            Style::default().fg(Color::White),
-        ));
-        spans.push(Span::styled(" â”‚ ", Style::default().fg(Color::DarkGray)));
-    }
-
-    // Compact warning
-    if let Some(pct) = data.compact_warning_pct {
-        if pct >= 0.80 {
-            let color = if pct >= 0.95 { Color::Red } else { Color::Yellow };
-            spans.push(Span::styled(
-                format!("âš  ctx {:.0}% ", pct * 100.0),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ));
-        }
-    }
-
-    // Vim mode
-    if let Some(mode) = &data.vim_mode {
-        let color = match mode.as_str() {
-            "NORMAL" => Color::Green,
-            "INSERT" => Color::Blue,
-            "VISUAL" => Color::Magenta,
-            _ => Color::White,
-        };
-        spans.push(Span::styled(
-            format!("[{}]", mode),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(" ", Style::default()));
-    }
-
-    // Agent badge
-    if let Some(badge) = &data.agent_badge {
-        spans.push(Span::styled(
-            format!("[{}]", badge),
-            Style::default().fg(Color::Magenta),
-        ));
-        spans.push(Span::styled(" ", Style::default()));
-    }
-
-    // Goal badge
-    if let Some(goal) = &data.goal_badge {
-        spans.push(Span::styled(
-            format!("[goal: {}]", goal),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(" ", Style::default()));
-    }
-
-    // Bridge connected
-    if data.bridge_connected {
-        spans.push(Span::styled(
-            "ðŸ”— ",
-            Style::default().fg(Color::Green),
-        ));
-    }
-
-    // Session ID
-    if let Some(sid) = &data.session_id {
-        let short = &sid[..sid.len().min(8)];
-        spans.push(Span::styled(
-            format!("[session:{}]", short),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    // Worktree
-    if let Some(wt) = &data.worktree {
-        spans.push(Span::styled(
-            format!("[worktree:{}]", wt),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    let line = Line::from(spans);
-    Paragraph::new(line)
-        .style(Style::default().bg(Color::Reset))
-        .render(area, buf);
-}
-
 
 // ---------------------------------------------------------------------------
 // Multi-agent UI components
@@ -3009,109 +2827,6 @@ pub fn render_agent_progress_line(
         ));
         spans.push(Span::styled(
             tool.to_string(),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        ));
-    }
-
-    Line::from(spans)
-}
-
-/// Render a multi-line coordinator status block for a multi-agent session.
-///
-/// Returns a `Vec<Line>` containing:
-/// 1. A header: `Coordinator · N agents (M active)` in cyan bold
-/// 2. One compact row per entry in `active_agents` using [`render_agent_progress_line`]
-///
-/// # Arguments
-/// * `agent_count`   — total number of sub-agents spawned
-/// * `completed`     — number of agents that have finished
-/// * `active_agents` — slice of agent ID strings currently running
-pub fn render_coordinator_status_lines(
-    agent_count: usize,
-    completed: usize,
-    active_agents: &[&str],
-) -> Vec<Line<'static>> {
-    let active_count = active_agents.len();
-
-    let header = Line::from(vec![
-        Span::styled(
-            "Coordinator".to_string(),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " · ".to_string(),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!("{} agent{}", agent_count, if agent_count == 1 { "" } else { "s" }),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(
-            format!(" ({} active)", active_count),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            if completed > 0 {
-                format!("  ✔ {} done", completed)
-            } else {
-                String::new()
-            },
-            Style::default().fg(Color::Green),
-        ),
-    ]);
-
-    let mut lines = vec![header];
-
-    for agent_id in active_agents {
-        let row = render_agent_progress_line(agent_id, "working", None);
-        // Indent agent rows by two spaces
-        let mut indented_spans = vec![Span::raw("  ")];
-        indented_spans.extend(row.spans);
-        lines.push(Line::from(indented_spans));
-    }
-
-    lines
-}
-
-/// Render a single header line for a teammate's message block.
-///
-/// Format: `┤ teammate: <id> ├` in magenta, optional `· <session_info>` in dim
-///
-/// # Arguments
-/// * `teammate_id`  — teammate identifier string
-/// * `session_info` — optional session info snippet to append
-pub fn render_teammate_header(
-    teammate_id: &str,
-    session_info: Option<&str>,
-) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(
-            "┤ teammate: ".to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
-        Span::styled(
-            teammate_id.to_string(),
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " ├".to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
-    ];
-
-    if let Some(info) = session_info {
-        spans.push(Span::styled(
-            "  · ".to_string(),
-            Style::default().fg(Color::DarkGray),
-        ));
-        spans.push(Span::styled(
-            info.to_string(),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::DIM),
@@ -3714,78 +3429,6 @@ mod prompt_status_row_tests {
         let mut app = hint_app();
         app.status_message = Some("Conversation cleared.".to_string());
         assert_eq!(text_of(&prompt_row_right_line(&app, SLOT)), "? shortcuts");
-    }
-}
-
-/// Token estimate inside the prompt box's bottom-right corner.
-#[cfg(test)]
-mod prompt_token_estimate_tests {
-    use super::*;
-    use crate::app::App;
-    use claurst_core::config::Config;
-    use claurst_core::cost::CostTracker;
-
-    /// A prompt box 4 rows tall: top rule, text row, bottom rule, breathing row.
-    const BOX: Rect = Rect { x: 0, y: 0, width: 40, height: 4 };
-
-    fn row_text(buf: &Buffer, y: u16) -> String {
-        (0..buf.area.width)
-            .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
-            .collect()
-    }
-
-    /// True when the row's last `expected` cells hold `expected` and everything
-    /// left of it is blank — i.e. the overlay is flush against the right edge.
-    fn right_aligned(buf: &Buffer, y: u16, expected: &str) -> bool {
-        let chars: Vec<char> = row_text(buf, y).chars().collect();
-        let n = expected.chars().count();
-        if chars.len() < n {
-            return false;
-        }
-        let split = chars.len() - n;
-        let tail: String = chars[split..].iter().collect();
-        tail == expected && chars[..split].iter().all(|c| *c == ' ')
-    }
-
-    fn app_with_input(chars: usize, tokens: usize) -> App {
-        let mut app = App::new(Config::default(), CostTracker::new());
-        app.prompt_input.text = "x".repeat(chars);
-        app.prompt_input.token_estimate = tokens;
-        app
-    }
-
-    #[test]
-    fn estimate_is_rendered_in_the_bottom_right_corner() {
-        let app = app_with_input(1001, 1300);
-        let mut buf = Buffer::empty(BOX);
-        render_prompt_token_estimate(&mut buf, BOX, &app);
-
-        // Bottom-right corner = the last row of the prompt area (row 3 here).
-        assert!(
-            right_aligned(&buf, 3, "~1.3k"),
-            "bottom-right and flush: {:?}",
-            row_text(&buf, 3)
-        );
-        let first = BOX.width - "~1.3k".len() as u16;
-        assert_eq!(buf[(first, 3)].fg, Color::DarkGray);
-        // The first text row stays free for the prompt text.
-        assert_eq!(row_text(&buf, 1).trim(), "");
-    }
-
-    #[test]
-    fn estimate_stays_hidden_for_short_input() {
-        let app = app_with_input(5, 2);
-        let mut buf = Buffer::empty(BOX);
-        render_prompt_token_estimate(&mut buf, BOX, &app);
-        assert_eq!(row_text(&buf, 3).trim(), "");
-    }
-
-    #[test]
-    fn estimate_uses_the_compact_form_above_1000_tokens() {
-        let app = app_with_input(1001, 2000);
-        let mut buf = Buffer::empty(BOX);
-        render_prompt_token_estimate(&mut buf, BOX, &app);
-        assert!(right_aligned(&buf, 3, "~2k"), "{:?}", row_text(&buf, 3));
     }
 }
 

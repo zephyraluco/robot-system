@@ -187,8 +187,6 @@ pub struct App {
 
     // ---- Session timing ---------------------------------------------------
 
-    /// Instant the session started (used for elapsed-time in the status bar).
-    pub session_start: std::time::Instant,
     /// Current Rustle pose for rendering (updated each frame).
     pub rustle_current_pose: crate::rustle::RustlePose,
     /// Temporary Rustle pose override (e.g. look-down on Tab). Reverts to
@@ -569,7 +567,6 @@ impl App {
             cursor_pos: 0,
             auto_scroll: true,
             new_messages_while_scrolled: 0,
-            session_start: std::time::Instant::now(),
             rustle_current_pose: crate::rustle::RustlePose::Default,
             rustle_pose_until: None,
             rustle_temp_pose: None,

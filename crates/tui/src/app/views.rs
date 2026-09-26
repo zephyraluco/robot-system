@@ -93,6 +93,95 @@ impl App {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     }
+
+    /// Pump the two background loads that feed the session browser and the
+    /// welcome screen's "Recent activity" list.
+    ///
+    /// Called once per frame from the main event loop. Both loads walk the
+    /// on-disk session store, so they run on a spawned task and deliver their
+    /// results over a channel — the UI thread must never block on them. Requests
+    /// come from `/resume` (browser list) and from startup (recent sessions).
+    pub fn tick_background_loads(&mut self) {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        // ---- Session browser list --------------------------------------
+        if let Some(ref mut rx) = self.session_list_rx {
+            match rx.try_recv() {
+                Ok(entries) => {
+                    self.session_browser.sessions = entries;
+                    self.session_browser.selected_idx = 0;
+                    self.session_list_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => self.session_list_rx = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if self.session_list_pending {
+            self.session_list_pending = false;
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            self.session_list_rx = Some(rx);
+            tokio::spawn(async move {
+                let sessions = claurst_core::history::list_sessions().await;
+                let entries: Vec<crate::dialogs::session_browser::SessionEntry> = sessions
+                    .into_iter()
+                    .map(|s| {
+                        let age = chrono::Utc::now().signed_duration_since(s.updated_at);
+                        let last_updated = if age.num_minutes() < 1 {
+                            "just now".to_string()
+                        } else if age.num_hours() < 1 {
+                            format!("{}m ago", age.num_minutes())
+                        } else if age.num_hours() < 24 {
+                            format!("{}h ago", age.num_hours())
+                        } else {
+                            format!("{}d ago", age.num_days())
+                        };
+                        crate::dialogs::session_browser::SessionEntry {
+                            id: s.id,
+                            title: s.title.unwrap_or_else(|| "(untitled)".to_string()),
+                            last_updated,
+                            message_count: s.messages.len(),
+                            cost_usd: s.total_cost,
+                        }
+                    })
+                    .collect();
+                let _ = tx.send(entries).await;
+            });
+        }
+
+        // ---- Welcome screen "Recent activity" -----------------------
+        if let Some(ref mut rx) = self.recent_sessions_rx {
+            match rx.try_recv() {
+                Ok(sessions) => {
+                    self.recent_sessions = sessions;
+                    self.recent_sessions_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => self.recent_sessions_rx = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if self.recent_sessions_pending {
+            self.recent_sessions_pending = false;
+            let root = self.project_root();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            self.recent_sessions_rx = Some(rx);
+            tokio::spawn(async move {
+                // Show at most a handful; the store is already newest-first.
+                const MAX_RECENT: usize = 5;
+                let summaries = claurst_core::session_storage::list_sessions(&root)
+                    .await
+                    .unwrap_or_default();
+                let recent: Vec<super::RecentSession> = summaries
+                    .into_iter()
+                    .take(MAX_RECENT)
+                    .map(|s| super::RecentSession {
+                        label: super::recent_session_label(s.title, s.last_prompt),
+                        mtime: s.mtime,
+                    })
+                    .collect();
+                let _ = tx.send(recent).await;
+            });
+        }
+    }
     pub fn attach_mcp_manager(&mut self, mcp_manager: Arc<claurst_mcp::McpManager>) {
         self.mcp_manager = Some(mcp_manager);
     }

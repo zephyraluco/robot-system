@@ -15,7 +15,7 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 ## 3. 主入口与 run loop
 
 - **`lib.rs`**（1495 行）：终端初始化/拆除——`setup_terminal(mouse_capture)`（raw mode、alternate screen、bracketed paste、kitty keyboard enhancement 协议检测、mouse capture 可关、panic hook 只在主线程恢复终端）、`restore_terminal()`、OSC 9;4 进度指示、终端标题管理。全部子模块声明与 re-export 也在这里。
-- **`app/run.rs` → `App::run(&mut terminal)`**：**TUI 主事件循环**，返回 `Option<String>`。每帧：drain 后台 session 列表 → `terminal.draw(render::render_app)` → OSC 8 超链接扫描重发（URL 可 Ctrl/Cmd 点击）→ 50ms 轮询 crossterm 事件 → 粘贴爆发检测 → `handle_key_event` → 提交/退出。cost/token 计数与 `CostTracker` 同步也在此。
+- **`app/run.rs` → `App::handle_query_event(&mut event)`**：把 `claurst_query::QueryEvent` 应用到 App 状态（流式文本、工具块、状态消息、通知、错误）。`App::run()` 事件循环已删（无调用者）；其中独占的两项能力已搬入 `cli/bin/claurst.rs` 主循环：每帧调 `App::tick_background_loads()`（异步加载会话列表 / 最近活动），并在 `terminal.draw` 后用 `osc8::scan_buffer_for_urls` + `emit_hits` 重发超链接（URL 可 Ctrl/Cmd 点击）。
 - **集成点**：`crates/cli/src/bin/claurst.rs` 中 `App::new(...)` + `app.run(...)` + 多处 `claurst_query::run_query_loop(...)`——CLI 主程序把 TUI 输入喂给查询循环，循环经 `QueryEvent` channel 回流渲染。
 
 ## 4. `App` 结构与 app/ 子模块
@@ -28,7 +28,7 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 | 文件 | 行数 | 职责 |
 |---|---|---|
 | `app/mod.rs` | 858 | App 结构体、状态字段、子模块组织；`try_copy_to_clipboard`（跨平台） |
-| `app/run.rs` | 575 | **主事件循环 `run()`** |
+| `app/run.rs` | 302 | 查询事件处理、跳转到错误、外部打开文件 |
 | `app/keys.rs` | 1813 | 键盘事件处理：快捷键、kitty 协议 shift 归一化（#183）、vim 命令行 `:q`/`:wq` |
 | `app/mouse.rs` | 717 | 鼠标事件：滚动、右键菜单、拖选 |
 | `app/commands.rs` | 335 | `PROMPT_SLASH_COMMANDS` 斜杠命令表与分发、help overlay 条目 |
@@ -67,7 +67,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `cost_tracker` | `Arc<CostTracker>` | 成本/Token 统计追踪器（跨线程共享） |
 | `messages` | `Vec<Message>` | 真实对话消息列表 |
 | `display_messages` | `Vec<DisplayMessage>` | 与 `messages` 同步的展示列表（含注入的系统标注），渲染器只需遍历一个序列 |
-| `system_annotations` | `Vec<SystemAnnotation>` | 渲染时穿插在真实消息之间的合成系统标注（`SystemMessageStyle::{Info,Warning,Error,Compact}`；`Error` 渲染为红色 `API Error` 块） |
+| `system_annotations` | `Vec<SystemAnnotation>` | 渲染时穿插在真实消息之间的合成系统标注（`SystemMessageStyle::{Info,Warning,Error,Compact}`；`Error` 走 `messages::render_system_api_error(msg, retry, width)` 渲染为红色 `API Error` 块，按终端宽度换行、不截断） |
 | `input` | `String` | 输入框当前文本 |
 | `prompt_input` | `PromptInputState` | 提示输入组件状态 |
 | `input_history` | `Vec<String>` | 输入历史（↑/↓ 回溯） |
@@ -115,7 +115,6 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `session_start` | `Instant` | 会话开始时间（状态栏显示已用时长） |
 | `rustle_current_pose` | `RustlePose` | 当前帧 Rustle（吉祥物）姿势 |
 | `rustle_pose_until` | `Option<Instant>` | 临时姿势的截止时刻 |
 | `rustle_temp_pose` | `Option<RustlePose>` | 临时姿势（如 Tab 触发的 look-down） |
@@ -326,18 +325,17 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `render.rs` | 3830 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
+| `render.rs` | 3710 | **全部 ratatui 渲染逻辑**，`render_app` 总入口，按 App 状态分派面板/overlay 绘制 |
 | `messages/mod.rs` | 2675 | 各消息类型渲染器，流式渲染 |
 | `messages/markdown.rs` | 339 | Markdown 基础渲染 |
 | `messages/markdown_enhanced.rs` | 389 | 增强 Markdown（表格/代码块等） |
 | `virtual_list.rs` | 421 | 消息高效渲染的虚拟滚动列表 |
 | `transcript_turn.rs` | 175 | 回合感知的 transcript 分组与元数据 |
-| `prompt_input.rs` | **5057**（最大文件） | 完整提示输入组件：vim 模式、历史、typeahead、粘贴处理、渲染 |
+| `prompt_input.rs` | **4983**（最大文件） | 完整提示输入组件：vim 模式、历史、typeahead、粘贴处理、渲染 |
 | `notifications.rs` | 269 | 警告/错误通知队列（去重、按严重度取当前项、过期清理） |
 | `rustle.rs` | 260 | Rustle 吉祥物（🦀）渲染 |
-| `figures.rs` | 29 | 图标/符号常量 |
-| `theme_colors.rs` | 212 | 主题调色板与无障碍支持 |
-| `osc8.rs` | 325 | 渲染后 OSC 8 超链接叠加 |
+| `figures.rs` | 5 | 仍在使用的图标常量（✻ / ※ / ▎） |
+| `osc8.rs` | 325 | 渲染后 OSC 8 超链接叠加（cli 主循环每帧调 `emit_hits`） |
 | `kitty_image.rs` | 424 | Kitty 图形协议内联图片渲染（含文本回退） |
 | `image_paste.rs` | 508 | 剪贴板图片粘贴 + Ctrl+V |
 
@@ -345,8 +343,10 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 > `min(终端宽, 50) - 1`）：**有通知时**渲染 `App::notifications` 队列的当前项 —— 错误（红 + 加粗）/
 > 警告（黄），前面带单字符 ASCII 标记（`x` / `!`，避免 East Asian ambiguous 字形在右对齐时失配）；
 > **否则**显示原有提示（`? shortcuts`，或粘贴占位符的 `click to view paste · alt+e expands`）。
-> 输入框内部只在**右下角**叠加 token 估算（`render_prompt_token_estimate`，`~1.3k`，超过 1000 字符
-> 才出现，右对齐贴右边缘），不再承载通知。
+> 输入框内部不再叠加任何浮层（原先的 token 估算 `render_prompt_token_estimate` 已删除；“~1.3k”只在模型列表的 context 显示里出现）。
+>
+> 后台加载：`App::tick_background_loads()`（`app/views.rs`）每帧在 cli 主循环里调用，drain 会话浏览器的
+> `session_list_rx` 与欢迎页的 `recent_sessions_rx`，并在 `/resume`、启动时按 pending 标记 spawn 异步任务。
 >
 > 通知由 `App::notify_error` / `notify_warning` / `notify(kind, msg)` 入队（均在 `app/messages.rs`）：
 > 错误无生命周期（下一条 prompt 提交时由 `begin_user_turn_snapshot` 清除），警告 5 秒后过期；
@@ -357,7 +357,8 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 > **会话内的终止错误**（请求超时、模型不可用、provider 流错误等）只通过 `run_query_loop` 的返回值
 > `QueryOutcome::Error` 上报，不会再发 `QueryEvent::Error`。`cli/bin/claurst.rs` 交互主循环在
 > 任务结束时匹配该结果：把错误文本作为 `SystemMessageStyle::Error` 标注插入 transcript
-> （红色 `API Error` 块，仅展示、不进入发给模型的历史），同时 `notify_error` 在提示行给出常驻告警；
+> （红色 `API Error` 块，仅展示、不进入发给模型的历史；正文按可用宽度词换行，超长 token 硬断行，
+> 不再有 5 行上限 / `[expand]` 提示 / 截断省略号），同时 `notify_error` 在提示行给出常驻告警；
 > 任务 panic（`JoinError`）同样处理。
 
 ## 6. 对话框 / 覆盖层（按功能分组）
@@ -374,7 +375,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 - **认证/账户**：`dialogs/device_auth_dialog.rs`（设备码 OAuth）、`dialogs/key_input_dialog.rs`、`dialogs/custom_provider_dialog.rs`、`dialogs/free_mode_dialog.rs`
 - **通用控件**：`dialogs/dialog_select.rs`(621，可复用模糊搜索选择列表)、`dialogs/dialog.rs`（基座）
 - **问卷/引导弹窗**：`dialogs/feedback_survey.rs`、`dialogs/desktop_upsell_startup.rs`
-- **输入辅助**：`file_injection.rs`（@file 引用解析）、`dialogs/file_injection_dialog.rs`、`message_copy.rs`(480，多格式复制)
+- **输入辅助**：`file_injection.rs`（@file 引用解析）、`dialogs/file_injection_dialog.rs`、`message_copy.rs`(87，剪贴板写入)
 - **连接**：`bridge_state.rs`、`plugin_views.rs`
 - **overlays.rs**(592)：共享模态 chrome（`ModalLayout`、深色遮罩、标题栏、搜索行）与帮助 overlay（`HelpOverlay`）；其余覆盖层/对话框一律位于 `dialogs/` 并基于 `DialogCore`
 - `input.rs`：斜杠命令解析（`is_slash_command`/`parse_slash_command`）

@@ -277,7 +277,7 @@ fn parse_inline_spans(text: String) -> Vec<Span<'static>> {
     spans
 }
 
-fn word_wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn word_wrap(text: &str, width: usize) -> Vec<String> {
     if width == 0 || UnicodeWidthStr::width(text) <= width {
         return vec![text.to_string()];
     }

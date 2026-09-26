@@ -75,11 +75,6 @@ pub fn detect_image_protocol() -> ImageProtocol {
     ImageProtocol::Text
 }
 
-// Kept for backward compatibility
-pub fn supports_kitty_graphics() -> bool {
-    detect_image_protocol() == ImageProtocol::Kitty
-}
-
 // ---------------------------------------------------------------------------
 // Core Rendering
 // ---------------------------------------------------------------------------

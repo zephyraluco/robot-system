@@ -330,12 +330,6 @@ impl DialogCore {
         self
     }
 
-    /// Make the dialog non-modal: only events inside its area are captured.
-    pub fn non_modal(mut self) -> Self {
-        self.modal = false;
-        self
-    }
-
     /// Close the dialog when a left click lands outside it (modal only).
     pub fn dismiss_on_outside_click(mut self) -> Self {
         self.dismiss_on_outside_click = true;

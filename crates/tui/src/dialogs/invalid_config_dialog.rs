@@ -67,16 +67,6 @@ impl InvalidConfigDialogState {
         state
     }
 
-    /// Show the dialog with a AGENTS.md parse error.
-    pub fn show_claude_md_error(error: &str) -> Self {
-        let mut state = Self::new();
-        state.kind = InvalidConfigKind::ClaudeMd;
-        state.error_message = error.to_string();
-        state.core.set_title("Invalid AGENTS.md");
-        state.core.open();
-        state
-    }
-
     pub fn dismiss(&mut self) {
         self.core.close();
         self.scroll = 0;

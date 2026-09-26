@@ -356,16 +356,6 @@ impl ElicitationDialogState {
         }
     }
 
-    /// For multi-enum fields: move the sub-cursor up.
-    pub fn multi_enum_prev(&mut self) {
-        let Some(field) = self.fields.get_mut(self.active_field) else { return };
-        if let ElicitationFieldKind::MultiEnum { checked, .. } = &field.kind {
-            let n = checked.len();
-            if n == 0 { return; }
-            let cur: usize = field.value.parse().unwrap_or(0);
-            field.value = (if cur == 0 { n - 1 } else { cur - 1 }).to_string();
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

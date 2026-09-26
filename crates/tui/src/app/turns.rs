@@ -132,16 +132,6 @@ impl App {
         self.on_new_message();
     }
 
-    /// Return the elapsed session time as a human-readable string, e.g. "2m 5s".
-    pub fn elapsed_str(&self) -> String {
-        let secs = self.session_start.elapsed().as_secs();
-        if secs < 60 {
-            format!("{}s", secs)
-        } else {
-            format!("{}m {}s", secs / 60, secs % 60)
-        }
-    }
-
     pub fn attach_turn_diff_state(
         &mut self,
         file_history: Arc<parking_lot::Mutex<FileHistory>>,

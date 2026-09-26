@@ -32,20 +32,6 @@ pub struct ColorPalette {
 }
 
 impl ColorPalette {
-    /// Get the color palette for a given theme name.
-    pub fn for_theme(theme_name: &str) -> Self {
-        match theme_name {
-            "deuteranopia" => Self::deuteranopia(),
-            "dark" => Self::dark(),
-            "light" => Self::light(),
-            "solarized" => Self::solarized(),
-            "nord" => Self::nord(),
-            "dracula" => Self::dracula(),
-            "monokai" => Self::monokai(),
-            _ => Self::default_theme(),
-        }
-    }
-
     /// Default Claurst theme
     fn default_theme() -> Self {
         Self {
@@ -184,29 +170,3 @@ impl ColorPalette {
     }
 }
 
-/// Get appropriate color for a given theme based on message type/role.
-pub fn get_message_indicator_color(theme_name: &str, role: &str) -> Color {
-    let palette = ColorPalette::for_theme(theme_name);
-    match role {
-        "user" => palette.accent,
-        "assistant" => palette.secondary_accent,
-        "system" => palette.disabled,
-        "tool" => palette.action,
-        _ => palette.text_light,
-    }
-}
-
-/// Get error indicator color for given theme (always prominent, never red in deuteranopia).
-pub fn get_error_color(theme_name: &str) -> Color {
-    ColorPalette::for_theme(theme_name).error
-}
-
-/// Get success indicator color for given theme (blue instead of green in deuteranopia).
-pub fn get_success_color(theme_name: &str) -> Color {
-    ColorPalette::for_theme(theme_name).success
-}
-
-/// Get warning indicator color for given theme (yellow/gold instead of orange in deuteranopia).
-pub fn get_warning_color(theme_name: &str) -> Color {
-    ColorPalette::for_theme(theme_name).warning
-}

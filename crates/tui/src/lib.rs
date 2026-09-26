@@ -87,7 +87,6 @@ pub mod overlays;
 pub mod bridge_state;
 /// Plugin hint/recommendation UI.
 pub mod plugin_views;
-pub mod theme_colors;
 /// Virtual scrollable list for efficient message rendering.
 pub mod virtual_list;
 /// Message type renderers (assistant, user, tool use, etc.).

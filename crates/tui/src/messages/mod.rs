@@ -65,9 +65,6 @@ impl Default for RenderContext<'static> {
     }
 }
 
-/// A styled line for rendering.
-pub type StyledLine<'a> = Line<'a>;
-
 const MAX_USER_PROMPT_DISPLAY_CHARS: usize = 10_000;
 const TRUNCATE_USER_PROMPT_HEAD_CHARS: usize = 2_500;
 const TRUNCATE_USER_PROMPT_TAIL_CHARS: usize = 2_500;
@@ -484,7 +481,7 @@ pub fn render_transcript_user_message(
             }
             ContentBlock::SystemAPIError { message, retry_secs } => {
                 flush_text(&mut pending_text, &mut lines);
-                lines.extend(render_system_api_error(&message, retry_secs));
+                lines.extend(render_system_api_error(&message, retry_secs, width as usize));
             }
             ContentBlock::CollapsedReadSearch { tool_name, paths, n_hidden } => {
                 flush_text(&mut pending_text, &mut lines);
@@ -741,7 +738,9 @@ pub fn render_transcript_assistant_message_tagged(
             ContentBlock::SystemAPIError { message, retry_secs } => {
                 flush_text(&mut pending_text, &mut out, ctx.width);
                 for line in indent_lines(
-                    render_system_api_error(&message, retry_secs),
+                    // The 3-space indent is applied below, so the block gets the
+                    // remaining columns.
+                    render_system_api_error(&message, retry_secs, (ctx.width as usize).saturating_sub(3)),
                     "   ",
                     Style::default(),
                     TRANSCRIPT_TEXT,
@@ -913,7 +912,7 @@ pub fn render_transcript_assistant_message(
             ContentBlock::SystemAPIError { message, retry_secs } => {
                 flush_text(&mut pending_text, &mut lines);
                 lines.extend(indent_lines(
-                    render_system_api_error(&message, retry_secs),
+                    render_system_api_error(&message, retry_secs, (ctx.width as usize).saturating_sub(3)),
                     "   ",
                     Style::default(),
                     TRANSCRIPT_TEXT,
@@ -1696,7 +1695,7 @@ pub fn render_message(msg: &Message, ctx: &RenderContext) -> Vec<Line<'static>> 
             }
             ContentBlock::SystemAPIError { message, retry_secs } => {
                 flush_text(&mut lines, &msg.role, &mut pending_text, ctx);
-                lines.extend(render_system_api_error(&message, retry_secs));
+                lines.extend(render_system_api_error(&message, retry_secs, ctx.width as usize));
             }
             ContentBlock::CollapsedReadSearch { tool_name, paths, n_hidden } => {
                 flush_text(&mut lines, &msg.role, &mut pending_text, ctx);
@@ -1715,32 +1714,54 @@ pub fn render_message(msg: &Message, ctx: &RenderContext) -> Vec<Line<'static>> 
     lines
 }
 
-/// Render a system API error block (red-bordered, first 5 lines with [expand] hint,
-/// optional retry countdown).
-pub fn render_system_api_error(msg: &str, retry_secs: Option<u32>) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![Span::styled(
+/// Render a system API error block: a red `┌─ API Error` header, the wrapped
+/// message body and a closing rule.
+///
+/// `width` is the total number of columns the block may occupy, including the
+/// `│ ` row prefix. The message is word-wrapped to fit (long words such as URLs
+/// are hard-broken) and shown in full — no line cap, no `[expand]` hint, no
+/// ellipsis. A provider error is exactly what the user needs to read, and the
+/// block has to reflow with the terminal instead of being truncated.
+pub fn render_system_api_error(
+    msg: &str,
+    retry_secs: Option<u32>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    // `│` + one space.
+    const PREFIX: &str = "\u{2502} ";
+    const PREFIX_COLS: usize = 2;
+    let body_width = width.saturating_sub(PREFIX_COLS).max(1);
+
+    let mut lines = vec![Line::from(vec![Span::styled(
         "\u{250c}\u{2500} API Error ",
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-    )]));
-    let all_lines: Vec<&str> = msg.lines().collect();
-    let total = all_lines.len();
-    for line in all_lines.iter().take(5) {
-        lines.push(Line::from(vec![
-            Span::styled("\u{2502} ", Style::default().fg(Color::Red)),
-            Span::styled(line.to_string(), Style::default().fg(Color::White)),
-        ]));
+    )])];
+
+    // `str::lines()` yields nothing for an empty message; keep one body row so
+    // the block still reads as a box.
+    let logical_lines: Vec<&str> = if msg.is_empty() {
+        vec![""]
+    } else {
+        msg.lines().collect()
+    };
+
+    let mut content_width = 0usize;
+    for logical in logical_lines {
+        for row in markdown::word_wrap(logical, body_width) {
+            content_width = content_width.max(UnicodeWidthStr::width(row.as_str()));
+            lines.push(Line::from(vec![
+                Span::styled(PREFIX.to_string(), Style::default().fg(Color::Red)),
+                Span::styled(row, Style::default().fg(Color::White)),
+            ]));
+        }
     }
-    if total > 5 {
-        lines.push(Line::from(vec![Span::styled(
-            format!("\u{2502} ... {} more lines [expand]", total - 5),
-            Style::default().fg(Color::DarkGray),
-        )]));
-    }
+
+    // Closing rule: `└` under the left edge, dashes spanning the used columns.
     lines.push(Line::from(vec![Span::styled(
-        "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        format!("\u{2514}{}", "\u{2500}".repeat(content_width + 1)),
         Style::default().fg(Color::Red),
     )]));
+
     if let Some(n) = retry_secs {
         lines.push(Line::from(vec![Span::styled(
             format!("  \u{21bb} Retrying in {}s...", n),
@@ -2381,7 +2402,7 @@ mod tests {
 
     #[test]
     fn test_render_system_api_error_short_message() {
-        let result = render_system_api_error("Connection refused", None);
+        let result = render_system_api_error("Connection refused", None, 80);
         assert!(!result.is_empty());
         let combined = result.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
         assert!(combined.contains("API Error"));
@@ -2392,20 +2413,58 @@ mod tests {
 
     #[test]
     fn test_render_system_api_error_with_retry() {
-        let result = render_system_api_error("Timeout", Some(30));
+        let result = render_system_api_error("Timeout", Some(30), 80);
         let combined = result.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
         assert!(combined.contains("API Error"));
         assert!(combined.contains("Timeout"));
         assert!(combined.contains("Retrying in 30s"));
     }
 
+    /// A long message wraps to the available width instead of being capped or
+    /// truncated: every character must survive, just across more rows.
     #[test]
-    fn test_render_system_api_error_long_message_shows_expand_hint() {
-        let msg = (0..10).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let result = render_system_api_error(&msg, None);
+    fn test_render_system_api_error_wraps_instead_of_truncating() {
+        let msg = "Provider 'opencode-zen' stream error (model 'qwen3-coder'): \
+                   request timed out after 60s while waiting for the first token";
+        let result = render_system_api_error(msg, None, 40);
         let combined = result.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
-        assert!(combined.contains("[expand]"), "should show [expand] hint when more than 5 lines");
-        assert!(combined.contains("5 more lines"));
+
+        assert!(!combined.contains("[expand]"), "no expand hint any more");
+        assert!(!combined.contains('\u{2026}'), "no ellipsis: {combined:?}");
+        // The words survive, and each body row fits the requested width.
+        for word in ["Provider", "'opencode-zen'", "60s", "token"] {
+            assert!(combined.contains(word), "missing {word:?} in {combined:?}");
+        }
+        for line in &result {
+            assert!(
+                UnicodeWidthStr::width(line_text(line).as_str()) <= 40,
+                "row exceeds 40 cols: {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    /// Long unbroken tokens (URLs) are hard-broken rather than overflowing.
+    #[test]
+    fn test_render_system_api_error_hard_breaks_long_tokens() {
+        let msg = format!("GET https://example.com/{} failed", "a".repeat(120));
+        let result = render_system_api_error(&msg, None, 32);
+        for line in &result {
+            assert!(
+                UnicodeWidthStr::width(line_text(line).as_str()) <= 32,
+                "row exceeds 32 cols: {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    /// Explicit newlines are preserved, so a multi-line provider body keeps its
+    /// shape instead of being re-flowed into one paragraph.
+    #[test]
+    fn test_render_system_api_error_preserves_explicit_newlines() {
+        let result = render_system_api_error("first line\nsecond line", None, 80);
+        let combined = result.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(combined.contains("first line\n\u{2502} second line"), "{combined:?}");
     }
 
     #[test]

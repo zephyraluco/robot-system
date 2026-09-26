@@ -1,9 +1,9 @@
 // plugin_views.rs — Plugin hint/recommendation UI elements and plugin list widget.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 /// A dismissible banner shown at the top of the message area when a plugin
@@ -110,61 +110,6 @@ pub struct PluginListItem {
     pub hook_count: usize,
 }
 
-impl PluginListItem {
-    /// Render one line suitable for a list widget.
-    fn to_line(&self) -> Line<'static> {
-        let status_style = if self.enabled {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let status = if self.enabled { "on " } else { "off" };
-
-        let mut parts: Vec<Span<'static>> = vec![
-            Span::styled(format!(" {} ", status), status_style),
-            Span::styled(
-                format!("{} ", self.name.clone()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("v{} ", self.version.clone()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ];
-
-        if !self.description.is_empty() {
-            parts.push(Span::styled(
-                format!("— {} ", self.description.clone()),
-                Style::default().fg(Color::White),
-            ));
-        }
-
-        let mut meta: Vec<String> = Vec::new();
-        if self.command_count > 0 {
-            meta.push(format!(
-                "{} cmd{}",
-                self.command_count,
-                if self.command_count == 1 { "" } else { "s" }
-            ));
-        }
-        if self.hook_count > 0 {
-            meta.push(format!(
-                "{} hook{}",
-                self.hook_count,
-                if self.hook_count == 1 { "" } else { "s" }
-            ));
-        }
-        if !meta.is_empty() {
-            parts.push(Span::styled(
-                format!("({})", meta.join(", ")),
-                Style::default().fg(Color::Cyan),
-            ));
-        }
-
-        Line::from(parts)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Interactive plugin list state
 // ---------------------------------------------------------------------------
@@ -208,80 +153,6 @@ impl PluginListState {
     pub fn selected_item(&self) -> Option<&PluginListItem> {
         self.items.get(self.selected)
     }
-}
-
-/// Render a list of plugin summary items into `area`.
-///
-/// Shows a bordered box titled "Plugins" with one line per plugin.
-/// When `state.show_detail` is true and a plugin is selected, a detail
-/// panel is rendered below the list.
-/// Returns the height consumed.
-pub fn render_plugin_list(
-    frame: &mut Frame,
-    state: &mut PluginListState,
-    area: Rect,
-    title: Option<&str>,
-) -> u16 {
-    if area.height < 3 {
-        return 0;
-    }
-
-    let items = &state.items;
-    let list_items: Vec<ListItem> = items
-        .iter()
-        .map(|p| ListItem::new(p.to_line()))
-        .collect();
-
-    let block_title = title.unwrap_or("Plugins");
-    let total = items.len();
-    let enabled = items.iter().filter(|p| p.enabled).count();
-
-    // If detail panel is shown we split area vertically.
-    let (list_area, detail_area_opt) = if state.show_detail && state.selected_item().is_some() {
-        let detail_height = 9u16; // border + 6 content lines + border
-        if area.height > detail_height + 3 {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(3),
-                    Constraint::Length(detail_height),
-                ])
-                .split(area);
-            (chunks[0], Some(chunks[1]))
-        } else {
-            (area, None)
-        }
-    } else {
-        (area, None)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ({}/{} enabled) ", block_title, enabled, total))
-        .border_style(Style::default().fg(Color::Magenta));
-
-    let highlight_style = Style::default()
-        .bg(Color::DarkGray)
-        .add_modifier(Modifier::BOLD);
-
-    let list = List::new(list_items)
-        .block(block)
-        .highlight_style(highlight_style)
-        .highlight_symbol("> ");
-
-    let mut list_state = ListState::default();
-    if !state.items.is_empty() {
-        list_state.select(Some(state.selected));
-    }
-
-    frame.render_widget(Clear, list_area);
-    frame.render_stateful_widget(list, list_area, &mut list_state);
-
-    if let (Some(detail_area), Some(item)) = (detail_area_opt, state.selected_item()) {
-        render_plugin_detail(frame, item, detail_area);
-    }
-
-    area.height
 }
 
 /// Render a detail panel for a single plugin into `area`.

@@ -15,7 +15,6 @@ use unicode_width::UnicodeWidthStr;
 
 pub const CLAURST_ACCENT: Color = Color::Rgb(233, 30, 99);
 pub const CLAURST_PANEL_BG: Color = Color::Rgb(20, 20, 28);
-pub const CLAURST_PANEL_BORDER: Color = Color::Rgb(72, 72, 80);
 pub const CLAURST_TEXT: Color = Color::Rgb(235, 235, 240);
 pub const CLAURST_MUTED: Color = Color::Rgb(110, 110, 118);
 
@@ -155,19 +154,7 @@ pub fn begin_modal_buf(
     layout
 }
 
-pub fn modal_title_line(title: &str, right_hint: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!(" {}", title),
-            Style::default().fg(CLAURST_TEXT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {}", right_hint),
-            Style::default().fg(CLAURST_MUTED),
-        ),
-    ])
-}
-
+// ---------------------------------------------------------------------------
 pub fn render_modal_title_frame(frame: &mut Frame, area: Rect, title: &str, right_hint: &str) {
     if area.height == 0 {
         return;

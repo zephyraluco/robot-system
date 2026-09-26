@@ -1526,8 +1526,6 @@ pub struct PromptInputState {
     pub paste_contents: std::collections::HashMap<u32, String>,
     /// Yank buffer for vim operations.
     pub yank_buf: String,
-    /// Estimated token count for current text.
-    pub token_estimate: usize,
     /// Pending multi-key vim command state (persists across keystrokes).
     pub vim_pending: VimPendingState,
     /// Undo stack: Vec of (text, cursor) snapshots before modifications.
@@ -1578,7 +1576,6 @@ impl PromptInputState {
             paste_counter: 0,
             paste_contents: std::collections::HashMap::new(),
             yank_buf: String::new(),
-            token_estimate: 0,
             vim_pending: VimPendingState::None,
             undo_stack: Vec::new(),
             visual_anchor: None,
@@ -1613,7 +1610,6 @@ impl PromptInputState {
         if self.mode == InputMode::Readonly { return; }
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
-        self.update_token_estimate();
     }
 
     /// Insert a newline (Shift+Enter).
@@ -1632,14 +1628,12 @@ impl PromptInputState {
             .unwrap_or(0);
         self.text.remove(prev);
         self.cursor = prev;
-        self.update_token_estimate();
     }
 
     /// Delete the character at cursor.
     pub fn delete(&mut self) {
         if self.cursor >= self.text.len() || self.mode == InputMode::Readonly { return; }
         self.text.remove(self.cursor);
-        self.update_token_estimate();
     }
 
     /// Move cursor left.
@@ -1682,7 +1676,6 @@ impl PromptInputState {
         if let Some(pos) = self.history_pos {
             self.text = self.history[pos].clone();
             self.cursor = self.text.len();
-            self.update_token_estimate();
         }
     }
 
@@ -1694,13 +1687,11 @@ impl PromptInputState {
                 self.history_pos = None;
                 self.text = self.history_draft.clone();
                 self.cursor = self.text.len();
-                self.update_token_estimate();
             }
             Some(n) => {
                 self.history_pos = Some(n + 1);
                 self.text = self.history[n + 1].clone();
                 self.cursor = self.text.len();
-                self.update_token_estimate();
             }
         }
     }
@@ -1721,22 +1712,7 @@ impl PromptInputState {
             self.text.insert(self.cursor, c);
             self.cursor += c.len_utf8();
         }
-        self.update_token_estimate();
         self.kill_ring.mark_non_kill();
-    }
-
-    /// Ctrl+K: Cut from cursor to end of line and save to kill ring.
-    pub fn kill_line(&mut self) {
-        if self.mode == InputMode::Readonly { return; }
-        let line_end = self.text[self.cursor..].find('\n')
-            .map(|p| self.cursor + p)
-            .unwrap_or(self.text.len());
-
-        if line_end > self.cursor {
-            let killed = self.text.drain(self.cursor..line_end).collect::<String>();
-            self.kill_ring.push(killed);
-            self.update_token_estimate();
-        }
     }
 
     /// Ctrl+U: Cut from line start to cursor and save to kill ring.
@@ -1750,7 +1726,6 @@ impl PromptInputState {
             let killed = self.text.drain(line_start..self.cursor).collect::<String>();
             self.kill_ring.push(killed);
             self.cursor = line_start;
-            self.update_token_estimate();
         }
     }
 
@@ -1780,7 +1755,6 @@ impl PromptInputState {
             let killed = self.text.drain(kill_start..self.cursor).collect::<String>();
             self.kill_ring.push(killed);
             self.cursor = kill_start;
-            self.update_token_estimate();
         }
     }
 
@@ -1792,7 +1766,6 @@ impl PromptInputState {
                 self.text.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
             }
-            self.update_token_estimate();
             self.kill_ring.mark_non_kill();
         }
     }
@@ -1828,7 +1801,6 @@ impl PromptInputState {
         if delete_start < self.cursor {
             self.text.drain(delete_start..self.cursor);
             self.cursor = delete_start;
-            self.update_token_estimate();
             self.kill_ring.mark_non_kill();
         }
     }
@@ -1857,7 +1829,6 @@ impl PromptInputState {
         let delete_end = self.cursor + char_idx_to_byte(rest, idx);
         if delete_end > self.cursor {
             self.text.drain(self.cursor..delete_end);
-            self.update_token_estimate();
             self.kill_ring.mark_non_kill();
         }
     }
@@ -1933,7 +1904,6 @@ impl PromptInputState {
         let delete_end = self.cursor + char_idx_to_byte(rest, idx);
         if delete_end > self.cursor {
             self.text.drain(self.cursor..delete_end);
-            self.update_token_estimate();
             self.kill_ring.mark_non_kill();
         }
     }
@@ -2588,7 +2558,6 @@ impl PromptInputState {
         self.suggestions.clear();
         self.suggestion_index = None;
         self.history_pos = None;
-        self.token_estimate = 0;
         self.vim_pending = VimPendingState::None;
         self.visual_anchor = None;
         self.vim_command_buf.clear();
@@ -2670,30 +2639,9 @@ impl PromptInputState {
             self.push_undo();
             self.text.replace_range(start..end, &body);
             self.cursor = start + body.len();
-            self.update_token_estimate();
             return true;
         }
         false
-    }
-
-    /// The paste placeholder covering byte offset `offset` (same hit rules as
-    /// `expand_paste_ref_at`) together with its stored body, without mutating
-    /// the buffer — used by the read-only paste viewer.
-    pub fn paste_ref_at(&self, offset: usize) -> Option<(u32, String)> {
-        let refs = claurst_core::prompt_history::parse_references_with_positions(&self.text);
-        for (id, matched, start) in refs {
-            if !matched.starts_with("[Pasted text #") {
-                continue;
-            }
-            let end = start + matched.len();
-            if offset < start || offset > end {
-                continue;
-            }
-            if let Some(body) = self.paste_contents.get(&id) {
-                return Some((id, body.clone()));
-            }
-        }
-        None
     }
 
     /// Expand the paste placeholder at the cursor; falls back to the first
@@ -2802,7 +2750,6 @@ impl PromptInputState {
                 self.cursor = new_cursor;
                 self.suggestions.clear();
                 self.suggestion_index = None;
-                self.update_token_estimate();
             }
         }
     }
@@ -2813,7 +2760,6 @@ impl PromptInputState {
         self.cursor = self.text.len();
         self.history_pos = None;
         self.suggestion_index = None;
-        self.update_token_estimate();
     }
 
     /// Map the current cursor (byte offset) to a (visual_row, visual_col) pair
@@ -2925,12 +2871,6 @@ impl PromptInputState {
         while self.cursor > 0 && !self.text.is_char_boundary(self.cursor) {
             self.cursor -= 1;
         }
-        self.update_token_estimate();
-    }
-
-    /// Rough token estimate: ~4 chars per token.
-    fn update_token_estimate(&mut self) {
-        self.token_estimate = self.text.len().div_ceil(4);
     }
 
     pub fn is_empty(&self) -> bool { self.text.trim().is_empty() }
@@ -3708,11 +3648,9 @@ mod tests {
         let mut s = PromptInputState::new();
         s.text = "something".to_string();
         s.cursor = 5;
-        s.token_estimate = 10;
         s.clear();
         assert!(s.text.is_empty());
         assert_eq!(s.cursor, 0);
-        assert_eq!(s.token_estimate, 0);
     }
 
     #[test]
@@ -3989,18 +3927,6 @@ mod tests {
         assert_eq!(s.text, "/help");
         assert_eq!(s.cursor, 5);
         assert!(s.suggestions.is_empty());
-    }
-
-    // ---- token estimate -------------------------------------------------
-
-    #[test]
-    fn token_estimate_rough() {
-        let mut s = PromptInputState::new();
-        for _ in 0..40 {
-            s.insert_char('a');
-        }
-        // 40 chars / 4 = 10 tokens
-        assert_eq!(s.token_estimate, 10);
     }
 
     // ---- motion_w / motion_b -----------------------------------------------

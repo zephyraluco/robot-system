@@ -135,24 +135,6 @@ pub fn format_context_window(context_window: u32) -> String {
     }
 }
 
-/// Format a model display line with optional context window and cost info.
-///
-/// Example: `"gpt-4o  128K ctx  $5.00/M"`
-pub fn format_model_line(model_str: &str, context_window: Option<u32>, cost_per_1m: Option<f64>) -> String {
-    let mut parts = vec![model_str.to_string()];
-    if let Some(ctx) = context_window {
-        parts.push(format_context_window(ctx).replace(" context", " ctx"));
-    }
-    if let Some(cost) = cost_per_1m {
-        if cost == 0.0 {
-            parts.push("free".to_string());
-        } else {
-            parts.push(format!("${:.2}/M", cost));
-        }
-    }
-    parts.join("  ")
-}
-
 /// A group of models belonging to the same provider, for structured display.
 pub struct ProviderSection {
     pub provider_name: String,

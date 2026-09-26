@@ -2168,6 +2168,9 @@ async fn run_interactive(
         app.tick_rustle_pose();
         // Drop notifications whose lifetime elapsed (warnings fade out here).
         app.notifications.tick();
+        // Collect the background session-list / recent-activity loads and kick
+        // off new ones when a view asked for them.
+        app.tick_background_loads();
 
         // Process file injection dialog outcome (if any)
         if let Some((outcome, pending_input, pending_imgs)) = app.file_injection_dialog.take_outcome() {
@@ -2197,8 +2200,18 @@ async fn run_interactive(
             last_auto_scroll = app.auto_scroll;
         }
 
-        // Draw the UI
-        terminal.draw(|f| render_app(f, &app))?;
+        // Draw the UI, then re-emit the URLs found in the *just-rendered* buffer
+        // as OSC 8 hyperlinks so terminals that support them (Windows Terminal,
+        // iTerm2, WezTerm, Kitty, Konsole, VS Code, …) make them Ctrl/Cmd-
+        // clickable. ratatui swaps its buffers at the end of `draw`, so the frame
+        // to scan is the returned `CompletedFrame` — not the terminal's current
+        // (empty, next-frame) buffer. A failed overlay write is non-fatal: it must
+        // never take the TUI down.
+        let completed = terminal.draw(|f| render_app(f, &app))?;
+        let osc8_hits = claurst_tui::osc8::scan_buffer_for_urls(completed.buffer);
+        if let Err(err) = claurst_tui::osc8::emit_hits(&osc8_hits) {
+            tracing::debug!(target: "osc8", "hyperlink overlay write failed: {err}");
+        }
 
         // Level-sync the terminal progress indicator (OSC 9;4) to streaming
         // state, so supporting terminals (iTerm2, WezTerm, Windows Terminal, …)

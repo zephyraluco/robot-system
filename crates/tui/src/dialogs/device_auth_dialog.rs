@@ -140,12 +140,6 @@ impl DeviceAuthDialogState {
         self.status = DeviceAuthStatus::ShowingCode;
     }
 
-    /// Transition to the polling state (code has been shown, now waiting for
-    /// the user to complete authorization).
-    pub fn set_polling(&mut self) {
-        self.status = DeviceAuthStatus::Polling;
-    }
-
     /// Mark the flow as successful with the obtained token.
     pub fn set_success(&mut self, token: String) {
         self.status = DeviceAuthStatus::Success(token);
