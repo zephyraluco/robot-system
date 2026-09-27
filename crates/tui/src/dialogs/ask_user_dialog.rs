@@ -77,7 +77,7 @@ impl AskUserDialogState {
         self.in_custom_input = self.options.is_none();
         self.reply_tx = Some(reply_tx);
         // Height adapts to the question + options content.
-        let question_lines = word_wrap(&self.question, 52).len() as u16;
+        let question_lines = wrap_question(&self.question, 52).len() as u16;
         let options_lines = self.options.as_ref().map(|v| v.len() as u16 + 1).unwrap_or(0);
         let height = (5 + question_lines + options_lines + 3).max(8);
         self.core.set_size(58, height);
@@ -193,13 +193,7 @@ impl AskUserDialogState {
 }
 
 impl DialogBehavior for AskUserDialogState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         match key.code {
@@ -260,7 +254,7 @@ impl DialogBehavior for AskUserDialogState {
         lines.push(Line::from(""));
 
         // Question text
-        for wrap_line in word_wrap(&self.question, inner_w) {
+        for wrap_line in wrap_question(&self.question, inner_w) {
             lines.push(Line::from(Span::styled(
                 wrap_line,
                 Style::default().fg(QUESTION_FG).bg(CLAURST_PANEL_BG),
@@ -322,36 +316,14 @@ impl DialogBehavior for AskUserDialogState {
 }
 
 // ---------------------------------------------------------------------------
-// Word-wrap helper
+// Question wrapping
 // ---------------------------------------------------------------------------
 
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        if paragraph.is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut current = String::new();
-        for word in paragraph.split_whitespace() {
-            if current.is_empty() {
-                current.push_str(word);
-            } else if current.len() + 1 + word.len() <= max_width {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                lines.push(current.clone());
-                current = word.to_string();
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
-        }
-    }
-    lines
+/// Wrap the question for display, preserving the model's explicit line breaks.
+fn wrap_question(text: &str, max_width: usize) -> Vec<String> {
+    text.split('\n')
+        .flat_map(|line| crate::text::wrap(line, max_width))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

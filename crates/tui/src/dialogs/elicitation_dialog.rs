@@ -363,13 +363,7 @@ impl ElicitationDialogState {
 // ---------------------------------------------------------------------------
 
 impl DialogBehavior for ElicitationDialogState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         // NOTE: Esc is consumed by the dispatch pipeline (→ Cancelled); the
@@ -427,7 +421,7 @@ impl DialogBehavior for ElicitationDialogState {
         // Optional request message
         if let Some(msg) = &self.request_message {
             lines.push(Line::from(""));
-            for chunk in wrap_str(msg, inner.width as usize) {
+            for chunk in crate::text::wrap(msg, inner.width as usize) {
                 lines.push(Line::from(vec![Span::styled(
                     chunk,
                     Style::default().fg(Color::White),
@@ -578,26 +572,6 @@ fn render_field_value_line<'a>(field: &'a ElicitationField, focused: bool, width
             ])
         }
     }
-}
-
-/// Simple word-wrap helper for the request message.
-fn wrap_str(s: &str, width: usize) -> Vec<String> {
-    if width == 0 { return vec![s.to_string()]; }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in s.split_whitespace() {
-        if current.is_empty() {
-            current = word.to_string();
-        } else if current.len() + 1 + word.len() <= width {
-            current.push(' ');
-            current.push_str(word);
-        } else {
-            lines.push(current.clone());
-            current = word.to_string();
-        }
-    }
-    if !current.is_empty() { lines.push(current); }
-    lines
 }
 
 // ---------------------------------------------------------------------------
@@ -828,15 +802,14 @@ mod tests {
     }
 
     #[test]
-    fn wrap_str_short_text_unchanged() {
-        let result = wrap_str("hello world", 40);
-        assert_eq!(result, vec!["hello world"]);
+    fn message_wrap_short_text_unchanged() {
+        assert_eq!(crate::text::wrap("hello world", 40), vec!["hello world"]);
     }
 
     #[test]
-    fn wrap_str_wraps_at_width() {
-        let result = wrap_str("hello world foo bar baz", 12);
-        // "hello world" = 11 chars, "foo bar baz" needs further wrapping
+    fn message_wrap_wraps_at_width() {
+        let result = crate::text::wrap("hello world foo bar baz", 12);
+        // "hello world" = 11 cols, then "foo bar baz" fits on a second line.
         assert!(result.len() > 1);
         for line in &result {
             assert!(line.len() <= 12, "line too long: {line:?}");

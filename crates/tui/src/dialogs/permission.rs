@@ -17,7 +17,8 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
-use crate::overlays::ModalLayout;
+use crate::overlays::{centered_rect, ModalLayout};
+use crate::text::wrap as word_wrap;
 
 // ---------------------------------------------------------------------------
 // Permission dialog kinds
@@ -380,13 +381,7 @@ impl PermissionRequest {
 // ---------------------------------------------------------------------------
 
 impl DialogBehavior for PermissionRequest {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         // Esc is consumed by the dispatch pipeline (→ Cancelled, i.e. deny)
@@ -484,103 +479,6 @@ fn command_reason_body(reason: String, command: &str) -> String {
         }
     }
     lines.join("\n").trim().to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Rendering helpers
-// ---------------------------------------------------------------------------
-
-/// Compute a centred `Rect` of the given `width` × `height` inside `area`.
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(height) / 2;
-    Rect {
-        x,
-        y,
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
-}
-
-/// Wrap `text` to fit within `width` display columns, preferring whitespace
-/// breaks but falling back to a hard character break when a single token is
-/// longer than `width`. Without the hard-break fallback, long unbreakable
-/// tokens (Windows paths, base64 blobs, URLs, …) overflow the dialog border.
-fn word_wrap(text: &str, width: usize) -> Vec<String> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    if UnicodeWidthStr::width(text) <= width {
-        return vec![text.to_string()];
-    }
-
-    // Hard-break a token that doesn't fit on a line of `width` columns,
-    // returning the chunks each ≤ `width` cells wide. Splits at character
-    // boundaries — never inside a grapheme cluster.
-    fn break_long_token(token: &str, width: usize) -> Vec<String> {
-        let mut chunks: Vec<String> = Vec::new();
-        let mut current = String::new();
-        let mut current_w = 0usize;
-        for ch in token.chars() {
-            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if current_w + cw > width && !current.is_empty() {
-                chunks.push(std::mem::take(&mut current));
-                current_w = 0;
-            }
-            current.push(ch);
-            current_w += cw;
-        }
-        if !current.is_empty() {
-            chunks.push(current);
-        }
-        chunks
-    }
-
-    let mut result = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0usize;
-    for word in text.split_whitespace() {
-        let word_w = UnicodeWidthStr::width(word);
-
-        // Long unbreakable token — flush the current line then hard-break the
-        // token across multiple lines.
-        if word_w > width {
-            if !current_line.is_empty() {
-                result.push(std::mem::take(&mut current_line));
-                current_width = 0;
-            }
-            let mut chunks = break_long_token(word, width);
-            if let Some(last) = chunks.pop() {
-                for chunk in chunks {
-                    result.push(chunk);
-                }
-                current_width = UnicodeWidthStr::width(last.as_str());
-                current_line = last;
-            }
-            continue;
-        }
-
-        if current_width == 0 {
-            current_line.push_str(word);
-            current_width = word_w;
-        } else if current_width + 1 + word_w <= width {
-            current_line.push(' ');
-            current_line.push_str(word);
-            current_width += 1 + word_w;
-        } else {
-            result.push(std::mem::take(&mut current_line));
-            current_line.push_str(word);
-            current_width = word_w;
-        }
-    }
-    if !current_line.is_empty() {
-        result.push(current_line);
-    }
-    if result.is_empty() {
-        result.push(text.to_string());
-    }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -938,13 +836,7 @@ impl ToolPermissionDialog {
 }
 
 impl DialogBehavior for ToolPermissionDialog {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         // Esc / Tab are consumed by the dispatch pipeline before this hook.
@@ -1301,13 +1193,7 @@ impl Default for McpApprovalDialogState {
 }
 
 impl DialogBehavior for McpApprovalDialogState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         // Esc is consumed by the dispatch pipeline (→ Cancelled = deny).
