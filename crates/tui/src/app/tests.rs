@@ -6,7 +6,7 @@ use claurst_core::config::Config;
 use claurst_core::types::Role;
 use super::keys::{key_event_to_keystroke, layout_to_latin, normalize_layout_shortcut_key};
 use crate::input::normalize_char_with_shift;
-use super::types::{ContextMenuItem, ContextMenuState};
+use super::types::ContextMenuItem;
 
     
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -23,6 +23,141 @@ use super::types::{ContextMenuItem, ContextMenuState};
             modifiers,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
+        }
+    }
+
+    type ModalDispatchCase = (&'static str, fn(&mut App));
+
+    fn modal_dispatch_cases() -> Vec<ModalDispatchCase> {
+        vec![
+            ("permission", |app| {
+                app.permission_request = Some(crate::dialogs::PermissionRequest::standard(
+                    "test".into(),
+                    "Bash".into(),
+                    "fixture".into(),
+                ));
+            }),
+            ("help", |app| app.help_dialog.core.open()),
+            ("settings", |app| app.settings_screen.core.open()),
+            ("theme", |app| app.theme_screen.core.open()),
+            ("stats", |app| app.stats_dialog.core.open()),
+            ("diff", |app| app.diff_viewer.core.open()),
+            ("feedback", |app| app.feedback_survey.core.open()),
+            ("memory selector", |app| app.memory_file_selector.core.open()),
+            ("hooks", |app| app.hooks_config_menu.core.open()),
+            ("desktop upsell", |app| app.desktop_upsell.core.open()),
+            ("import config", |app| app.import_config_dialog.core.open()),
+            ("invalid config", |app| app.invalid_config_dialog.core.open()),
+            ("bypass permissions", |app| app.bypass_permissions_dialog.core.open()),
+            ("ask user", |app| app.ask_user_dialog.core.open()),
+            ("onboarding", |app| app.onboarding_dialog.core.open()),
+            ("import picker", |app| app.import_config_picker.core.open()),
+            ("connect picker", |app| app.connect_dialog.core.open()),
+            ("key input", |app| app.key_input_dialog.core.open()),
+            ("custom provider", |app| app.custom_provider_dialog.core.open()),
+            ("free mode", |app| app.free_mode_dialog.core.open()),
+            ("device auth", |app| app.device_auth_dialog.core.open()),
+            ("command palette", |app| app.command_palette.core.open()),
+            ("elicitation", |app| app.elicitation.core.open()),
+            ("model picker", |app| app.model_picker.core.open()),
+            ("effort picker", |app| app.effort_dialog.core.open()),
+            ("session browser", |app| app.session_browser.core.open()),
+            ("session branching", |app| app.session_branching.core.open()),
+            ("export", |app| app.export_dialog.core.open()),
+            ("MCP approval", |app| app.mcp_approval.core.open()),
+            ("file injection", |app| app.file_injection_dialog.core.open()),
+            ("context menu", |app| {
+                app.show_context_menu(ContextMenuKind::Message { message_index: 0 })
+            }),
+        ]
+    }
+
+    fn rendered_symbols(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn every_registered_modal_renders_and_captures_input() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let cases = modal_dispatch_cases();
+        let mut expected_names = cases.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let mut registered_names = make_app()
+            .modal_states()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        expected_names.sort_unstable();
+        registered_names.sort_unstable();
+        assert_eq!(
+            registered_names, expected_names,
+            "every modal inventory entry needs a behavior test"
+        );
+
+        for (name, open_modal) in cases {
+            let mut app = make_app();
+            app.set_prompt_text("prompt sentinel".into());
+            assert!(
+                app.modal_states().all(|(_, visible)| !visible),
+                "{name}: test case must start with all modals closed"
+            );
+            let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+            terminal
+                .draw(|frame| crate::render::render_app(frame, &app))
+                .unwrap();
+            let baseline = rendered_symbols(&terminal);
+
+            open_modal(&mut app);
+            let registered_visible = app
+                .modal_states()
+                .filter(|(_, visible)| *visible)
+                .map(|(registered, _)| registered)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                registered_visible,
+                vec![name],
+                "modal test table and App modal inventory differ"
+            );
+            assert!(app.any_modal_open(), "{name}: modal gate omitted visible state");
+            assert!(
+                !app.paste_burst_allowed(),
+                "{name}: raw paste-burst gate must be closed"
+            );
+
+            terminal
+                .draw(|frame| crate::render::render_app(frame, &app))
+                .unwrap();
+            assert_ne!(
+                rendered_symbols(&terminal),
+                baseline,
+                "{name}: visible modal state did not affect the rendered frame"
+            );
+
+            assert!(
+                !app.handle_key_event(press_key(KeyCode::Char('z'), KeyModifiers::NONE)),
+                "{name}: ordinary modal input must not submit the prompt"
+            );
+            assert_eq!(app.prompt_input.text, "prompt sentinel", "{name}: key leaked to prompt");
+
+            app.last_max_scroll.set(20);
+            app.handle_mouse_event(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 2,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            });
+            assert_eq!(app.scroll_offset, 0, "{name}: wheel event leaked to transcript");
+
+            let _ = app.handle_dialog_paste("paste sentinel");
+            assert_eq!(app.prompt_input.text, "prompt sentinel", "{name}: paste leaked to prompt");
         }
     }
 
@@ -254,10 +389,9 @@ use super::types::{ContextMenuItem, ContextMenuState};
         app.handle_key_event(press_key(KeyCode::Char('/'), KeyModifiers::SHIFT));
 
         assert!(
-            !app.help_overlay.visible,
+            !app.help_dialog.is_visible(),
             "a literal slash must not open the help overlay"
         );
-        assert!(!app.show_help);
         assert_eq!(app.prompt_input.text, "/");
     }
 
@@ -499,13 +633,12 @@ use super::types::{ContextMenuItem, ContextMenuState};
             modifiers: KeyModifiers::empty(),
         });
 
-        assert!(matches!(
-            app.context_menu_state,
-            Some(ContextMenuState {
-                kind: ContextMenuKind::Message { message_index: 1 },
-                ..
-            })
-        ));
+        assert!(app.context_menu.is_visible(), "right click should open the menu modal");
+        assert_eq!(
+            app.context_menu_kind,
+            Some(ContextMenuKind::Message { message_index: 1 }),
+            "the menu must target the clicked row's message, not the last one"
+        );
     }
 
     // ---- Help overlay -------------------------------------------------------
@@ -513,12 +646,10 @@ use super::types::{ContextMenuItem, ContextMenuState};
     #[test]
     fn test_help_slash_command_opens_overlay() {
         let mut app = make_app();
-        assert!(!app.help_overlay.visible);
-        assert!(!app.show_help);
-        assert!(!app.help_overlay.commands.is_empty());
+        assert!(!app.help_dialog.is_visible());
+        assert!(!app.help_dialog.commands.is_empty());
         assert!(app.intercept_slash_command("help"));
-        assert!(app.help_overlay.visible);
-        assert!(app.show_help);
+        assert!(app.help_dialog.is_visible());
     }
 
     #[test]
@@ -526,10 +657,10 @@ use super::types::{ContextMenuItem, ContextMenuState};
         let mut app = make_app();
         // First call opens it.
         assert!(app.intercept_slash_command("help"));
-        assert!(app.help_overlay.visible);
+        assert!(app.help_dialog.is_visible());
         // Second call while already open should leave it open (not toggle it off).
         assert!(app.intercept_slash_command("help"));
-        assert!(app.help_overlay.visible);
+        assert!(app.help_dialog.is_visible());
     }
 
     #[test]
@@ -538,20 +669,17 @@ use super::types::{ContextMenuItem, ContextMenuState};
 
         app.handle_key_event(press_key(KeyCode::Char('?'), KeyModifiers::SHIFT));
 
-        assert!(app.help_overlay.visible);
-        assert!(app.show_help);
+        assert!(app.help_dialog.is_visible());
     }
 
     #[test]
     fn test_question_mark_shortcut_closes_help_with_shift_modifier() {
         let mut app = make_app();
-        app.help_overlay.toggle();
-        app.show_help = true;
+        app.help_dialog.toggle();
 
         app.handle_key_event(press_key(KeyCode::Char('?'), KeyModifiers::SHIFT));
 
-        assert!(!app.help_overlay.visible);
-        assert!(!app.show_help);
+        assert!(!app.help_dialog.is_visible());
     }
 
     #[test]
@@ -563,7 +691,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
 
         app.handle_key_event(press_key(KeyCode::Char('?'), KeyModifiers::SHIFT));
 
-        assert!(!app.help_overlay.visible);
+        assert!(!app.help_dialog.is_visible());
         assert_eq!(app.prompt_input.text, "why?");
     }
 
@@ -630,7 +758,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
-        app.handle_permission_key(key);
+        crate::dialogs::permission::handle_permission_key(&mut app, key);
 
         // Dialog should be dismissed and "git" added to the allowlist.
         assert!(app.permission_request.is_none());
@@ -664,7 +792,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
-        app.handle_permission_key(key);
+        crate::dialogs::permission::handle_permission_key(&mut app, key);
 
         assert!(app.permission_request.is_none());
         assert!(app.bash_command_allowed_by_prefix("cargo test"));
@@ -693,7 +821,7 @@ use super::types::{ContextMenuItem, ContextMenuState};
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
-        app.handle_permission_key(key);
+        crate::dialogs::permission::handle_permission_key(&mut app, key);
 
         assert!(app.permission_request.is_none());
         assert!(!app.bash_command_allowed_by_prefix("npm test"));

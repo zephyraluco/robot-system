@@ -1333,12 +1333,12 @@ pub fn find_command(name: &str) -> Option<Box<dyn SlashCommand>> {
 }
 
 /// Build `HelpEntry` values for all non-hidden commands, suitable for
-/// populating `HelpOverlay::commands` at startup.
-pub fn build_help_entries() -> Vec<claurst_tui::overlays::HelpEntry> {
+/// populating `HelpDialogState::commands` at startup.
+pub fn build_help_entries() -> Vec<claurst_tui::dialogs::help_dialog::HelpEntry> {
     all_commands()
         .iter()
         .filter(|c| !c.hidden())
-        .map(|c| claurst_tui::overlays::HelpEntry {
+        .map(|c| claurst_tui::dialogs::help_dialog::HelpEntry {
             name: c.name().to_string(),
             aliases: c.aliases().join(", "),
             description: c.description().to_string(),

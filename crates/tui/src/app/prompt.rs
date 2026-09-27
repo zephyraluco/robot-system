@@ -16,23 +16,15 @@ impl App {
         }
     }
 
-    pub(super) fn sync_legacy_prompt_fields(&mut self) {
-        self.input = self.prompt_input.text.clone();
-        self.cursor_pos = self.prompt_input.cursor;
-        self.history_index = self.prompt_input.history_pos;
-    }
-
     pub fn refresh_prompt_input(&mut self) {
         self.prompt_input.mode = self.prompt_mode();
         if self.file_injection_dialog.is_visible() {
             // Don't update suggestions while the injection dialog is open.
-            self.sync_legacy_prompt_fields();
             return;
         }
         let file_autocomplete_limit = self.config.file_autocomplete_limit;
         let file_autocomplete_show_hidden = self.config.file_autocomplete_show_hidden_files;
         self.prompt_input.update_suggestions(PROMPT_SLASH_COMMANDS, file_autocomplete_limit, file_autocomplete_show_hidden);
-        self.sync_legacy_prompt_fields();
     }
 
     pub fn set_prompt_text(&mut self, text: String) {
@@ -67,9 +59,6 @@ impl App {
         match source {
             Some(TypeaheadSource::SlashCommand) => {
                 self.prompt_input.accept_suggestion();
-                // Sync legacy mirror fields without recomputing suggestions, so
-                // the just-completed command isn't re-suggested behind the popup.
-                self.sync_legacy_prompt_fields();
                 true
             }
             Some(TypeaheadSource::FileRef) => {

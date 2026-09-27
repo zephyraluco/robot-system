@@ -15,6 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
+use crate::app::App;
 use crate::dialogs::dialog::{DialogBehavior, DialogCore, DialogOutcome};
 use crate::overlays::ModalLayout;
 
@@ -1547,6 +1548,62 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     } else {
         let cut: String = chars[..max_chars.saturating_sub(1)].iter().collect();
         format!("{}\u{2026}", cut)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App-side key handling
+// ---------------------------------------------------------------------------
+
+/// Handle a key event while a permission dialog is active.
+///
+/// Part of the shared modal key layer (`crate::dialogs::modal_keys`). Routed
+/// through the dialog's `DialogBehavior` pipeline: `Confirmed` means an option
+/// was chosen (record a bash prefix when applicable), `Cancelled` means Esc
+/// (deny) — both dismiss the dialog.
+pub fn handle_permission_key(app: &mut App, key: KeyEvent) {
+    let out = match app.permission_request.as_mut() {
+        Some(pr) => pr.handle_key(key),
+        None => return,
+    };
+    if out.is_confirmed() {
+        // If the selected option is the prefix-allow option ('P'), record it.
+        maybe_record_bash_prefix(app);
+        app.permission_request = None;
+    } else if out.is_cancelled() {
+        app.permission_request = None;
+    }
+}
+
+/// If the active permission dialog's selected option is the prefix-allow
+/// option ('P') for a Bash dialog, extract the suggested prefix and add it
+/// to `bash_prefix_allowlist` so future requests with the same prefix are
+/// silently approved.
+pub fn maybe_record_bash_prefix(app: &mut App) {
+    let pr = match app.permission_request.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
+    // Only act on Bash dialogs where the selected option key is 'P'.
+    let selected_key = pr.options.get(pr.selected_option).map(|o| o.key);
+    if selected_key != Some('P') {
+        return;
+    }
+    if let PermissionDialogKind::Bash { command, .. } = &pr.kind {
+        // Always normalize to the first whitespace-delimited word so
+        // that the allowlist check in `bash_command_allowed_by_prefix`
+        // (which also uses `split_whitespace().next()`) matches correctly.
+        let first_word = command.split_whitespace().next().unwrap_or("").to_string();
+        if !first_word.is_empty() {
+            app.bash_prefix_allowlist.insert(first_word.clone());
+            // Persist so the "always allow" choice survives restarts.
+            if let Ok(mut settings) = claurst_core::config::Settings::load_sync() {
+                if !settings.allowed_bash_prefixes.contains(&first_word) {
+                    settings.allowed_bash_prefixes.push(first_word);
+                    let _ = settings.save_sync();
+                }
+            }
+        }
     }
 }
 

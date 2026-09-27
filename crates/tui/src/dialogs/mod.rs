@@ -5,6 +5,8 @@
 //!
 //! - `dialog` — the generic base component (`DialogCore` + `DialogBehavior`).
 //! - `dialog_select` — reusable fuzzy-search selection dialog widget.
+//! - `modal_keys` — the modal key layer: the single entry point that routes
+//!   every key to whichever modal is visible (`handle_modal_key`).
 //! - `permission` — permission dialogs and confirmation dialogs
 //!   (`PermissionRequest`, `ToolPermissionDialog`, `McpApprovalDialogState`).
 //! - One module per concrete dialog (export, stats, diff viewer, elicitation,
@@ -27,11 +29,13 @@ pub mod export_dialog;
 pub mod feedback_survey;
 pub mod file_injection_dialog;
 pub mod free_mode_dialog;
+pub mod help_dialog;
 pub mod hooks_config_menu;
 pub mod import_config_dialog;
 pub mod invalid_config_dialog;
 pub mod key_input_dialog;
 pub mod memory_file_selector;
+pub mod modal_keys;
 pub mod model_picker;
 pub mod onboarding_dialog;
 pub mod permission;

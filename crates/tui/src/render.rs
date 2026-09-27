@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use crate::app::{App, ContextMenuKind, SystemAnnotation, SystemMessageStyle, ToolStatus};
+use crate::app::{App, SystemAnnotation, SystemMessageStyle, ToolStatus};
 use crate::rustle::rustle_lines;
 use crate::dialogs::dialog::DialogBehavior as _;
 use crate::figures;
@@ -12,10 +12,7 @@ use crate::messages::{
     render_thinking_live_content,
     RenderContext,
 };
-use crate::overlays::{
-    render_help_overlay,
-    CLAURST_ACCENT,
-};
+use crate::overlays::CLAURST_ACCENT;
 use crate::plugin_views::render_plugin_hints;
 use crate::prompt_input::{InputMode, TypeaheadSource, VimMode, input_height, render_prompt_input};
 use crate::transcript_turn::{build_transcript_turns, TranscriptTurn};
@@ -26,7 +23,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -463,14 +460,7 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     // ("> ") and the right-margin padding used inside `render_prompt_input`.
     // Keep this in sync with prefix_width=2 + right_pad=2 there.
     let prompt_text_width = size.width.saturating_sub(4);
-    // While the `/effort` selector is open it DOCKS into the prompt area, fully
-    // replacing the prompt box, so the row budget follows the docked panel height
-    // (clamped by the layout below) instead of the prompt's own line count.
-    let prompt_height = if app.effort_picker.visible {
-        crate::effort_picker::DOCK_HEIGHT
-    } else {
-        input_height(&app.prompt_input, prompt_text_width) + 1 // +1 for model/mode status line
-    };
+    let prompt_height = input_height(&app.prompt_input, prompt_text_width) + 1; // +1 for model/mode status line
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -489,19 +479,9 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     if status_height > 0 {
         render_status_row(frame, app, chunks[2]);
     }
-    // The `/effort` selector replaces the prompt box while open: render it into
-    // the input area (full width) and SKIP the prompt input. The prompt returns
-    // when the picker closes on confirm/cancel.
-    if app.effort_picker.visible {
-        crate::effort_picker::render_effort_picker(
-            frame,
-            &app.effort_picker,
-            chunks[3],
-            app.frame_count,
-        );
-    } else {
-        render_input(frame, app, chunks[3], prompt_focused);
-    }
+    // The `/effort` picker is a regular centered modal (rendered with the other
+    // overlays below), so the prompt box is always drawn normally.
+    render_input(frame, app, chunks[3], prompt_focused);
     app.last_input_area.set(chunks[3]);
     if suggestions_height > 0 {
         render_prompt_suggestions(frame, app, chunks[4]);
@@ -516,11 +496,8 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     }
 
     // New help overlay
-    if app.help_overlay.visible {
-        render_help_overlay(frame, &app.help_overlay, size);
-    } else if app.show_help {
-        // Legacy fallback â€” render the simple help overlay
-        render_simple_help_overlay(frame, size);
+    if app.help_dialog.is_visible() {
+        app.help_dialog.render(frame, size);
     }
 
     // Settings screen (highest-priority full-screen overlay) — routed through
@@ -586,8 +563,11 @@ pub fn render_app(frame: &mut Frame, app: &App) {
         app.onboarding_dialog.render(frame, size);
     }
 
-    // The `/effort` selector is NOT an overlay — it docks into the prompt input
-    // area (see the input dispatch above), replacing the prompt box while open.
+    // `/effort` picker — the shared list picker modal, rendered like every other
+    // DialogSelect (title bar, search field, highlight bar).
+    if app.effort_dialog.is_visible() {
+        app.effort_dialog.render(frame, size);
+    }
 
     // Import-config source picker
     if app.import_config_picker.is_visible() {
@@ -657,7 +637,9 @@ pub fn render_app(frame: &mut Frame, app: &App) {
     // ---- Text selection highlight (topmost post-pass) ---------------------
     apply_selection_highlight(frame, app);
     cache_selectable_row_text(frame, app);
-    render_context_menu(frame, app);
+    // Right-click context menu — a `DialogSelectState` list modal, drawn last
+    // so it always sits above the transcript and the selection highlight.
+    app.context_menu.render(frame, size);
 }
 
 /// Snapshot the rendered text of every row inside the selectable area into
@@ -772,96 +754,6 @@ fn apply_selection_highlight(frame: &mut Frame, app: &App) {
     }
     while text.ends_with(|c: char| c.is_whitespace()) { text.pop(); }
     *app.selection_text.borrow_mut() = text;
-}
-
-/// Render a right-click context menu at the specified position.
-fn render_context_menu(frame: &mut Frame, app: &App) {
-    if let Some(menu) = app.context_menu_state {
-        let selection_present = !app.selection_text.borrow().trim().is_empty();
-        let items: Vec<(&str, bool)> = match menu.kind {
-            ContextMenuKind::Message { message_index } => vec![
-                ("Copy", app.messages.get(message_index).is_some()),
-                ("Fork new chat", app.messages.get(message_index).is_some()),
-            ],
-            ContextMenuKind::Selection => vec![("Copy", selection_present)],
-        };
-
-        let menu_height = (items.len() as u16).saturating_add(2);
-        let menu_width = items
-            .iter()
-            .map(|(label, _)| label.len())
-            .max()
-            .unwrap_or(4)
-            .saturating_add(4) as u16;
-
-        // Clamp menu position to screen bounds
-        let screen = frame.area();
-        let menu_x = menu.x.min(screen.width.saturating_sub(menu_width + 1));
-        let menu_y = menu.y.min(screen.height.saturating_sub(menu_height + 1));
-
-        let menu_area = Rect {
-            x: menu_x,
-            y: menu_y,
-            width: menu_width,
-            height: menu_height,
-        };
-
-        // Draw menu background with border
-        let menu_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(Style::default().fg(Color::White).bg(Color::Rgb(24, 24, 30)))
-            .border_style(Style::default().fg(CLAURST_ACCENT));
-        menu_block.render(menu_area, frame.buffer_mut());
-
-        // Render menu items
-        let inner = Rect {
-            x: menu_area.x + 1,
-            y: menu_area.y + 1,
-            width: menu_area.width.saturating_sub(2),
-            height: menu_area.height.saturating_sub(2),
-        };
-
-        for (idx, (label, enabled)) in items.iter().enumerate() {
-            if idx >= inner.height as usize {
-                break;
-            }
-
-            let y = inner.y + idx as u16;
-            let is_selected = idx == menu.selected_index;
-
-            let fg_color = if *enabled {
-                if is_selected { Color::Black } else { Color::White }
-            } else {
-                Color::DarkGray
-            };
-
-            let bg_color = if is_selected {
-                if *enabled { CLAURST_ACCENT } else { Color::Rgb(24, 24, 30) }
-            } else {
-                Color::Rgb(24, 24, 30)
-            };
-
-            let style = Style::default().fg(fg_color).bg(bg_color);
-            let padded_label =
-                format!(" {:<width$} ", label, width = menu_width.saturating_sub(2) as usize);
-
-            if let Some(cell) = frame.buffer_mut().cell_mut((inner.x, y)) {
-                cell.set_symbol(&padded_label[0..1.min(padded_label.len())]);
-                cell.set_style(style);
-            }
-
-            for (col_offset, ch) in padded_label.chars().enumerate() {
-                if col_offset >= inner.width as usize {
-                    break;
-                }
-                if let Some(cell) = frame.buffer_mut().cell_mut((inner.x + col_offset as u16, y)) {
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(style);
-                }
-            }
-        }
-    }
 }
 
 // -----------------------------------------------------------------------
@@ -2707,77 +2599,6 @@ fn render_prompt_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 // -----------------------------------------------------------------------
-// Legacy simple help overlay (fallback when help_overlay is not open)
-// -----------------------------------------------------------------------
-
-fn render_simple_help_overlay(frame: &mut Frame, area: Rect) {
-    let help_width = 50u16.min(area.width.saturating_sub(4));
-    let help_height = 20u16.min(area.height.saturating_sub(4));
-    let help_area = crate::overlays::centered_rect(help_width, help_height, area);
-
-    frame.render_widget(Clear, help_area);
-
-    let lines = vec![
-        Line::from(vec![Span::styled(
-            " Key Bindings",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )]),
-        Line::from(""),
-        kb_line("Enter", "Submit message"),
-        kb_line("Ctrl+C", "Cancel streaming / Quit"),
-        kb_line("Ctrl+D", "Quit (empty input)"),
-        kb_line("Up / Down", "Navigate input history"),
-        kb_line("Ctrl+R", "Search input history"),
-        kb_line("PageUp / PageDown", "Scroll messages"),
-        kb_line("F1 / ?", "Toggle this help"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " Permission Dialog",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )]),
-        Line::from(""),
-        kb_line("1 / 2 / 3", "Select option"),
-        kb_line("y / a / n", "Allow / Always / Deny"),
-        kb_line("Enter", "Confirm selection"),
-        kb_line("Esc", "Deny (close dialog)"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " press F1 or ? to close ",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )]),
-    ];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Help ")
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let para = Paragraph::new(lines)
-        .block(block)
-        .alignment(Alignment::Left);
-    frame.render_widget(para, help_area);
-}
-
-fn kb_line<'a>(key: &str, desc: &str) -> Line<'a> {
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            format!("{:<20}", key),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(desc.to_string()),
-    ])
-}
-
-// -----------------------------------------------------------------------
 // Complete status line (T2-8)
 // -----------------------------------------------------------------------
 
@@ -3163,13 +2984,12 @@ mod stream_cache_tests {
     }
 }
 
-/// The `/effort` selector docks into the prompt area and replaces the prompt box
-/// while open (issue #275).
+/// The `/effort` picker is an ordinary centered list modal (`DialogSelectState`)
+/// rendered on top of the transcript; the prompt box keeps rendering underneath.
 #[cfg(test)]
-mod effort_dock_tests {
+mod effort_picker_tests {
     use super::*;
     use crate::app::App;
-    use crate::dialogs::model_picker::EffortLevel;
     use claurst_core::config::Config;
     use claurst_core::cost::CostTracker;
     use ratatui::{backend::TestBackend, Terminal};
@@ -3193,10 +3013,10 @@ mod effort_dock_tests {
     }
 
     #[test]
-    fn effort_picker_replaces_prompt_box_when_open() {
+    fn effort_dialog_renders_as_a_list_modal() {
         let mut app = App::new(Config::default(), CostTracker::new());
 
-        // Closed: the prompt box (its pointer) is drawn; no selector chrome.
+        // Closed: the prompt box (its pointer) is drawn; no picker chrome.
         let closed = render_screen(&app);
         assert!(
             closed.contains(PROMPT_POINTER),
@@ -3204,29 +3024,20 @@ mod effort_dock_tests {
         );
         assert!(
             !closed.contains("ultracode"),
-            "selector labels must not show while the picker is closed"
+            "picker labels must not show while the picker is closed"
         );
 
-        // Open: the selector takes over the prompt area; the prompt box is gone.
-        app.effort_picker.open(
-            EffortLevel::High,
-            vec![
-                EffortLevel::Low,
-                EffortLevel::Medium,
-                EffortLevel::High,
-                EffortLevel::XHigh,
-                EffortLevel::Max,
-                EffortLevel::Ultracode,
-            ],
-        );
+        // Open: a centered list modal is drawn ON TOP — the prompt box stays
+        // visible underneath (it is no longer replaced by a docked panel).
+        app.open_effort_picker();
         let open = render_screen(&app);
         assert!(
-            open.contains("Effort") && open.contains("ultracode"),
-            "the docked Effort selector should render in the prompt area"
+            open.contains("Select effort") && open.contains("ultracode"),
+            "the effort list modal should render its ladder"
         );
         assert!(
-            !open.contains(PROMPT_POINTER),
-            "prompt input must NOT be drawn while the picker is open"
+            open.contains(PROMPT_POINTER),
+            "the prompt box must still be drawn under the modal"
         );
     }
 }

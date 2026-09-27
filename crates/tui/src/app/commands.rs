@@ -2,7 +2,7 @@
 
 use claurst_core::config::Theme;
 use claurst_core::types::Role;
-use crate::overlays::HelpEntry;
+use crate::dialogs::help_dialog::HelpEntry;
 use super::App;
 use super::run::open_file_externally;
 use super::try_copy_to_clipboard;
@@ -81,7 +81,7 @@ pub(super) fn help_command_category(name: &str) -> &'static str {
     }
 }
 
-pub(super) fn help_overlay_entries() -> Vec<HelpEntry> {
+pub(super) fn help_dialog_entries() -> Vec<HelpEntry> {
     PROMPT_SLASH_COMMANDS
         .iter()
         .map(|(name, description)| HelpEntry {
@@ -94,6 +94,62 @@ pub(super) fn help_overlay_entries() -> Vec<HelpEntry> {
 }
 
 impl App {
+    /// Open the `/effort` picker.
+    ///
+    /// The ladder is model-adaptive: it comes from
+    /// `claurst_api::supported_efforts(provider, model, registry)`, which returns
+    /// the model's supported levels ascending with `Ultracode` always last. The
+    /// dialog is the shared list picker (`DialogSelectState`) — a plain vertical
+    /// list with the current level badged, no bespoke visuals.
+    pub fn open_effort_picker(&mut self) {
+        use crate::dialogs::model_picker::EffortLevel;
+        use crate::dialogs::dialog_select::SelectItem;
+
+        let provider = self.config.provider.as_deref().unwrap_or("anthropic");
+        let model_id = self
+            .model_name
+            .strip_prefix(&format!("{}/", provider))
+            .unwrap_or(&self.model_name);
+        let mut levels = claurst_api::supported_efforts(
+            provider,
+            model_id,
+            Some(&self.model_registry),
+        );
+        if levels.is_empty() {
+            // Non-reasoning / unknown model: still offer the common ladder so the
+            // picker is never empty.
+            levels = vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::Ultracode,
+            ];
+        }
+
+        let current = self.effort_level;
+        self.effort_dialog.items = levels
+            .iter()
+            .map(|level| SelectItem {
+                id: level.as_str().to_string(),
+                title: level.label().to_string(),
+                description: String::new(),
+                // No section header: keep the list flat, like the variant picker.
+                category: String::new(),
+                badge: (*level == current).then(|| "current".to_string()),
+            })
+            .collect();
+
+        self.effort_dialog.open();
+        // Land on the current level (exact match, else the nearest level below).
+        if let Some(idx) = levels
+            .iter()
+            .position(|level| *level == current)
+            .or_else(|| levels.iter().rposition(|level| *level <= current))
+        {
+            self.effort_dialog.selected_index = idx;
+        }
+    }
+
     /// Handle slash commands that should open UI screens rather than execute
     /// as normal commands. Returns `true` if the command was intercepted.
     pub fn intercept_slash_command_with_args(&mut self, cmd: &str, args: &str) -> bool {
@@ -186,7 +242,6 @@ impl App {
             "clear" | "new" => {
                 self.messages.clear();
                 self.system_annotations.clear();
-                self.display_messages.clear();
                 self.streaming_text.clear();
                 self.streaming_thinking.clear();
                 self.tool_use_blocks.clear();
@@ -257,21 +312,7 @@ impl App {
                 true
             }
             "effort" => {
-                // Open the horizontal picker so users can pick an effort level
-                // visually instead of cycling/typing it (issues #149 / #268). The
-                // selectable ladder is model-adaptive: it comes from
-                // `supported_efforts` for the current provider + model.
-                let provider = self.config.provider.as_deref().unwrap_or("anthropic");
-                let model_id = self
-                    .model_name
-                    .strip_prefix(&format!("{}/", provider))
-                    .unwrap_or(&self.model_name);
-                let levels = claurst_api::supported_efforts(
-                    provider,
-                    model_id,
-                    Some(&self.model_registry),
-                );
-                self.effort_picker.open(self.effort_level, levels);
+                self.open_effort_picker();
                 true
             }
             "doctor" => {
@@ -307,9 +348,8 @@ impl App {
             }
             "help" => {
                 // Open the help overlay (same as pressing `?` or F1).
-                if !self.help_overlay.visible {
-                    self.show_help = true;
-                    self.help_overlay.toggle();
+                if !self.help_dialog.is_visible() {
+                    self.help_dialog.toggle();
                 }
                 true
             }

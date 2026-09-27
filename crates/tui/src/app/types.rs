@@ -1,7 +1,5 @@
 //! Pure data model: messages, tool blocks, dialogs, state structs.
 
-use claurst_core::types::Message;
-
 /// Visual style for inline system messages in the conversation pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemMessageStyle {
@@ -26,31 +24,6 @@ pub struct SystemAnnotation {
     pub style: SystemMessageStyle,
 }
 
-/// A displayable item in the conversation pane — either a real message or
-/// a synthetic system annotation (e.g. compact boundary).
-/// Used only by `render.rs`; constructed on the fly from `messages` +
-/// `system_annotations`.
-#[derive(Debug, Clone)]
-pub enum DisplayMessage {
-    /// A real conversation turn.
-    Conversation(Message),
-    /// An injected system notice (e.g. compact boundary).
-    System { text: String, style: SystemMessageStyle },
-}
-
-/// Context menu state: position and currently selected item index.
-#[derive(Debug, Clone, Copy)]
-pub struct ContextMenuState {
-    /// X coordinate of the menu (column).
-    pub x: u16,
-    /// Y coordinate of the menu (row).
-    pub y: u16,
-    /// Currently selected menu item index (0-based).
-    pub selected_index: usize,
-    /// What the context menu is acting on.
-    pub kind: ContextMenuKind,
-}
-
 /// What content the context menu is currently targeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuKind {
@@ -65,6 +38,25 @@ pub enum ContextMenuKind {
 pub enum ContextMenuItem {
     Copy,
     Fork,
+}
+
+impl ContextMenuItem {
+    /// Stable id used as the list picker's `SelectItem::id`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Fork => "fork",
+        }
+    }
+
+    /// Parse an id produced by [`Self::id`].
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "copy" => Some(Self::Copy),
+            "fork" => Some(Self::Fork),
+            _ => None,
+        }
+    }
 }
 
 /// Status of an active or completed tool call.

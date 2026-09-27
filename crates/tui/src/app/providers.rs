@@ -180,7 +180,7 @@ impl App {
     /// Route a confirmed provider-picker selection to its follow-up dialog or
     /// immediate activation. Called by the key dispatcher when the connect
     /// dialog returns `DialogOutcome::Confirmed` (Enter on an item).
-    pub(super) fn activate_provider_from_picker(&mut self, selected: SelectItem) {
+    pub(crate) fn activate_provider_from_picker(&mut self, selected: SelectItem) {
         match selected.id.as_str() {
             // Local providers — activate immediately, no key needed
             "ollama" | "lmstudio" | "llamacpp" => {
@@ -247,7 +247,7 @@ impl App {
         }
     }
 
-    pub(super) fn import_selection_from_picker(id: &str) -> Option<claurst_core::ImportSelection> {
+    pub(crate) fn import_selection_from_picker(id: &str) -> Option<claurst_core::ImportSelection> {
         match id {
             "claude-md" => Some(claurst_core::ImportSelection::ClaudeMd),
             "settings" => Some(claurst_core::ImportSelection::Settings),
@@ -256,7 +256,7 @@ impl App {
         }
     }
 
-    pub(super) fn open_import_config_preview(&mut self, selection: claurst_core::ImportSelection) {
+    pub(crate) fn open_import_config_preview(&mut self, selection: claurst_core::ImportSelection) {
         match claurst_core::build_import_preview(selection) {
             Ok(preview) => {
                 self.import_config_dialog.open(preview);
@@ -271,7 +271,7 @@ impl App {
         }
     }
 
-    pub(super) fn perform_import_config(&mut self) {
+    pub(crate) fn perform_import_config(&mut self) {
         let Some(selection) = self.import_config_dialog.selection else {
             self.import_config_dialog.close();
             return;
@@ -367,7 +367,7 @@ impl App {
         );
     }
 
-    pub(super) fn activate_provider(&mut self, provider_id: String, provider_name: String, status_prefix: &str) {
+    pub(crate) fn activate_provider(&mut self, provider_id: String, provider_name: String, status_prefix: &str) {
         let picker_title = provider_name.clone();
         self.fast_mode = false;
         self.set_provider_default(provider_id.clone());
@@ -377,7 +377,7 @@ impl App {
         self.open_model_picker_for_provider(&provider_id, Some(picker_title));
     }
 
-    pub(super) fn persist_custom_provider_base_url(&self, base_url: &str) {
+    pub(crate) fn persist_custom_provider_base_url(&self, base_url: &str) {
         let mut settings = Settings::load_sync().unwrap_or_default();
         let entry = settings.providers.entry("custom-openai".to_string()).or_default();
         entry.api_base = Some(base_url.to_string());
@@ -385,7 +385,7 @@ impl App {
         let _ = settings.save_sync();
     }
 
-    pub(super) fn persist_provider_and_model(&self) {
+    pub(crate) fn persist_provider_and_model(&self) {
         let mut settings = Settings::load_sync().unwrap_or_default();
         settings.provider = self.config.provider.clone();
         settings.config.provider = self.config.provider.clone();

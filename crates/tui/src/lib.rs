@@ -99,8 +99,6 @@ pub mod prompt_input;
 pub mod notifications;
 /// Message copy utilities for different formatting options (markdown, plaintext, code, JSON).
 pub mod message_copy;
-/// Effort-level picker dialog (/effort).
-pub mod effort_picker;
 /// File injection utilities for parsing @file references.
 pub mod file_injection;
 
@@ -396,11 +394,8 @@ mod tests {
         app.set_prompt_text("hello".to_string());
         let result = app.take_input();
         assert_eq!(result, "hello");
-        assert_eq!(app.input, "");
         assert_eq!(app.prompt_input.text, "");
-        assert_eq!(app.input_history, vec!["hello"]);
         assert_eq!(app.prompt_input.history, vec!["hello"]);
-        assert_eq!(app.cursor_pos, 0);
     }
 
     #[test]
@@ -408,7 +403,7 @@ mod tests {
         let mut app = make_app();
         let result = app.take_input();
         assert_eq!(result, "");
-        assert!(app.input_history.is_empty());
+        assert!(app.prompt_input.history.is_empty());
     }
 
     // ---- add_message / set_model ----------------------------------------
@@ -614,7 +609,6 @@ mod tests {
         let mut app = make_app();
         app.handle_key_event(key(KeyCode::Char('h')));
         app.handle_key_event(key(KeyCode::Char('i')));
-        assert_eq!(app.input, "hi");
         assert_eq!(app.prompt_input.text, "hi");
     }
 
@@ -623,7 +617,6 @@ mod tests {
         let mut app = make_app();
         app.set_prompt_text("hello".to_string());
         app.handle_key_event(key(KeyCode::Backspace));
-        assert_eq!(app.input, "hell");
         assert_eq!(app.prompt_input.text, "hell");
     }
 
@@ -631,32 +624,29 @@ mod tests {
     fn test_history_navigation() {
         let mut app = make_app();
         app.prompt_input.history = vec!["first".to_string(), "second".to_string()];
-        app.input_history = app.prompt_input.history.clone();
         app.handle_key_event(key(KeyCode::Up));
-        assert_eq!(app.input, "second");
+        assert_eq!(app.prompt_input.text, "second");
         app.handle_key_event(key(KeyCode::Up));
-        assert_eq!(app.input, "first");
+        assert_eq!(app.prompt_input.text, "first");
         app.handle_key_event(key(KeyCode::Down));
-        assert_eq!(app.input, "second");
+        assert_eq!(app.prompt_input.text, "second");
         app.handle_key_event(key(KeyCode::Down));
-        assert_eq!(app.input, "");
-        assert!(app.history_index.is_none());
+        assert_eq!(app.prompt_input.text, "");
+        assert!(app.prompt_input.history_pos.is_none());
     }
 
     #[test]
     fn test_history_navigation_restores_draft() {
         let mut app = make_app();
         app.prompt_input.history = vec!["first".to_string(), "second".to_string()];
-        app.input_history = app.prompt_input.history.clone();
         app.set_prompt_text("draft".to_string());
 
         app.handle_key_event(key(KeyCode::Up));
-        assert_eq!(app.input, "second");
+        assert_eq!(app.prompt_input.text, "second");
 
         app.handle_key_event(key(KeyCode::Down));
-        assert_eq!(app.input, "draft");
         assert_eq!(app.prompt_input.text, "draft");
-        assert!(app.history_index.is_none());
+        assert!(app.prompt_input.history_pos.is_none());
     }
 
     #[test]
@@ -666,9 +656,7 @@ mod tests {
         app.handle_key_event(key(KeyCode::Char('a')));
         app.handle_key_event(key(KeyCode::Tab));
 
-        assert_eq!(app.input, "/advisor");
         assert_eq!(app.prompt_input.text, "/advisor");
-        assert_eq!(app.cursor_pos, "/advisor".len());
     }
 
     #[test]
@@ -912,11 +900,11 @@ mod tests {
     #[test]
     fn test_f1_toggles_help() {
         let mut app = make_app();
-        assert!(!app.show_help);
+        assert!(!app.help_dialog.is_visible());
         app.handle_key_event(key(KeyCode::F(1)));
-        assert!(app.show_help);
+        assert!(app.help_dialog.is_visible());
         app.handle_key_event(key(KeyCode::F(1)));
-        assert!(!app.show_help);
+        assert!(!app.help_dialog.is_visible());
     }
 
     #[test]

@@ -12,16 +12,106 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 - **关键外部**：`ratatui` + `crossterm`、`syntect`（语法高亮）、`similar`（diff）、`icy_sixel` + `image`（Sixel/Kitty 图像协议）、`unicode-width`。
 - **features**：约 40 个**透传 feature**（pass-through 到 `claurst-core`）。
 
+### 2.1 当前模块边界
+
+下图按当前源码职责概括 crate 边界与 TUI 主干；箭头表示调用或依赖，不代表每条边都是运行时数据流。
+
+```mermaid
+flowchart TB
+	subgraph HOST[宿主与外围 crate]
+		CLI["CLI 主循环<br/>终端事件、异步任务与查询编排"]
+		COMMANDS["commands<br/>命令副作用与命令执行"]
+		QUERY["query<br/>QueryEvent / 查询循环"]
+	end
+
+	subgraph TUI["claurst-tui"]
+		LIB["lib.rs<br/>公开模块、终端 setup / restore"]
+		APP["app/<br/>App 状态、键鼠输入与 QueryEvent 更新"]
+		PROMPT["prompt_input.rs<br/>提示编辑与粘贴状态"]
+		RENDER["render.rs<br/>整帧布局与叠层绘制"]
+		TURN["transcript_turn.rs<br/>从消息构建回合视图"]
+		MSG["messages/<br/>消息与 Markdown 渲染"]
+		VLIST["virtual_list.rs<br/>虚拟消息列表"]
+		DIALOGS["dialogs/<br/>DialogCore 与具体对话框"]
+		OVERLAYS["overlays.rs<br/>共享模态样式与帮助层"]
+		AUX["辅助模块<br/>notifications / bridge / plugin hints<br/>文件注入 / 图像 / 剪贴板 / OSC 8"]
+	end
+
+	subgraph DOMAIN["TUI 使用的内部 crate"]
+		CORE["core<br/>消息、配置与运行状态类型"]
+		API["api"]
+		TOOLS["tools"]
+		MCP["mcp"]
+	end
+
+	CLI -->|创建 App、分发输入| APP
+	CLI -->|每帧调用| RENDER
+	CLI -->|斜杠命令执行| COMMANDS
+	CLI -->|启动查询并接收事件| QUERY
+	COMMANDS -->|命令解析辅助| LIB
+	COMMANDS -->|帮助条目类型| OVERLAYS
+	LIB -. 声明并导出 .-> APP
+	APP -->|编辑状态| PROMPT
+	APP -->|持有状态并路由交互| DIALOGS
+	RENDER -->|读取界面状态| APP
+	RENDER --> TURN
+	TURN --> MSG
+	RENDER --> MSG
+	RENDER --> VLIST
+	RENDER --> DIALOGS
+	RENDER --> OVERLAYS
+	APP --> AUX
+	MSG --> AUX
+	DIALOGS --> OVERLAYS
+	TUI -. 直接依赖 .-> CORE
+	TUI -. 直接依赖 .-> API
+	TUI -. 直接依赖 .-> TOOLS
+	TUI -. 直接依赖 .-> QUERY
+	TUI -. 直接依赖 .-> MCP
+```
+
+### 2.2 运行时事件与渲染数据流
+
+```mermaid
+sequenceDiagram
+	participant TERM as 终端 / crossterm
+	participant CLI as CLI 主循环
+	participant APP as TUI App
+	participant DRAW as render_app
+	participant Q as query 循环
+	participant CMD as commands
+
+	TERM->>CLI: 键盘、鼠标、粘贴事件
+	CLI->>APP: handle_key_event / handle_mouse_event / handle_paste_data
+	APP->>APP: 更新输入、对话框与交互状态
+	CLI->>APP: handle_query_event(QueryEvent)
+	Q-->>CLI: 流式文本、工具、状态与回合事件
+	APP->>APP: 更新消息、流式内容及工具状态
+	CLI->>DRAW: terminal.draw(render_app(frame, &app))
+	DRAW->>DRAW: App 消息 → turn 视图 → 消息行 → VirtualList
+	DRAW-->>CLI: 完成的终端帧
+	CLI->>CLI: 扫描帧 buffer 并发射 OSC 8 超链接
+
+	APP-->>CLI: take_input()
+	alt 斜杠命令
+		CLI->>CMD: execute_command(input, context)
+	else 普通 prompt
+		CLI->>Q: 构造输入并启动查询
+	end
+```
+
+CLI（`crates/cli/src/bin/claurst.rs`）拥有终端事件循环、绘制时机和查询任务编排；TUI 提供状态与交互处理（`crates/tui/src/app/`）、渲染（`render.rs`）及终端初始化辅助（`lib.rs`）。`render_app` 当前接收 `&App`，但会通过 `Cell` / `RefCell` 更新命中测试和选择等帧间状态；输入事件随后会读取这些布局结果。斜杠命令执行器在 `crates/commands`，与 TUI 内部的 `app/commands.rs`（命令表和 UI 拦截）不是同一模块。
+
 ## 3. 主入口与 run loop
 
 - **`lib.rs`**（1495 行）：终端初始化/拆除——`setup_terminal(mouse_capture)`（raw mode、alternate screen、bracketed paste、kitty keyboard enhancement 协议检测、mouse capture 可关、panic hook 只在主线程恢复终端）、`restore_terminal()`、OSC 9;4 进度指示、终端标题管理。全部子模块声明与 re-export 也在这里。
 - **`app/run.rs` → `App::handle_query_event(&mut event)`**：把 `claurst_query::QueryEvent` 应用到 App 状态（流式文本、工具块、状态消息、通知、错误）。`App::run()` 事件循环已删（无调用者）；其中独占的两项能力已搬入 `cli/bin/claurst.rs` 主循环：每帧调 `App::tick_background_loads()`（异步加载会话列表 / 最近活动），并在 `terminal.draw` 后用 `osc8::scan_buffer_for_urls` + `emit_hits` 重发超链接（URL 可 Ctrl/Cmd 点击）。
-- **集成点**：`crates/cli/src/bin/claurst.rs` 中 `App::new(...)` + `app.run(...)` + 多处 `claurst_query::run_query_loop(...)`——CLI 主程序把 TUI 输入喂给查询循环，循环经 `QueryEvent` channel 回流渲染。
+- **集成点**：`crates/cli/src/bin/claurst.rs` 创建 `App`，调用 `handle_key_event` / `handle_mouse_event` / `handle_query_event`，并通过 `terminal.draw` 调用 `render_app`。CLI 将提交的普通 prompt 交给查询循环；查询循环发出的 `QueryEvent` 由 CLI 转交给 `App::handle_query_event`。事件循环属于 CLI，TUI crate 当前没有 `App::run()`。
 
 ## 4. `App` 结构与 app/ 子模块
 
-`App` 是整个 TUI 应用的顶层状态容器（来源：`crates/tui/src/app/mod.rs`）：约 **156 个字段**、
-2 个私有字段、若干常量/工具函数以及少量核心方法。字段按功能域划分为十余个区块，
+`App` 是整个 TUI 应用的顶层状态容器（来源：`crates/tui/src/app/mod.rs`）：包含大量公开状态字段，
+少数字段私有，并提供常量/工具函数及核心方法。字段按功能域划分为十余个区块，
 由同目录子模块（`commands`、`keys`、`messages`、`mouse`、`prompt`、`providers`、
 `run`、`turns`、`views` 等）分别操作。逐字段解析见 4.2 起。
 
@@ -29,7 +119,7 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 |---|---|---|
 | `app/mod.rs` | 858 | App 结构体、状态字段、子模块组织；`try_copy_to_clipboard`（跨平台） |
 | `app/run.rs` | 302 | 查询事件处理、跳转到错误、外部打开文件 |
-| `app/keys.rs` | 1813 | 键盘事件处理：快捷键、kitty 协议 shift 归一化（#183）、vim 命令行 `:q`/`:wq` |
+| `app/keys.rs` | 1154 | **主界面**键盘事件处理：kitty 协议 shift 归一化（#183）、布局无关的 Ctrl 快捷键（#47）、键位解析与硬编码分支、粘贴突发检测；模态按键一律先交给 `dialogs/modal_keys.rs`（两层结构，见 §8.1） |
 | `app/mouse.rs` | 717 | 鼠标事件：滚动、右键菜单、拖选 |
 | `app/commands.rs` | 335 | `PROMPT_SLASH_COMMANDS` 斜杠命令表与分发、help overlay 条目 |
 | `app/prompt.rs` | 89 | 输入提示相关助手 |
@@ -37,11 +127,11 @@ ratatui + crossterm 的交互式终端界面——消息渲染（语法高亮）
 | `app/messages.rs` | 223 | 消息列表操作助手 + 通知入队助手（`notify_error` / `notify_warning`） |
 | `app/turns.rs` | 176 | 回合状态转换助手 |
 | `app/views.rs` | 222 | 各视图状态切换助手 |
-| `app/types.rs` | 146 | `DisplayMessage`、`SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
+| `app/types.rs` | 146 | `SystemAnnotation`、`ToolUseBlock`、`TurnMetadata`、`FocusTarget` 等类型 |
 | `app/tests.rs` | 890 | App 层测试 |
 
 从 `types` 公开再导出的类型：
-`ContextMenuKind`、`DisplayMessage`、`FocusTarget`、
+`ContextMenuKind`、`FocusTarget`、
 `RecentSession`、`SystemAnnotation`、`SystemMessageStyle`、`ToolStatus`、
 `ToolUseBlock`、`TurnMetadata`、`recent_session_label`。
 
@@ -66,12 +156,8 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `config` | `Config` | 全局配置（模型、主题、provider 等） |
 | `cost_tracker` | `Arc<CostTracker>` | 成本/Token 统计追踪器（跨线程共享） |
 | `messages` | `Vec<Message>` | 真实对话消息列表 |
-| `display_messages` | `Vec<DisplayMessage>` | 与 `messages` 同步的展示列表（含注入的系统标注），渲染器只需遍历一个序列 |
 | `system_annotations` | `Vec<SystemAnnotation>` | 渲染时穿插在真实消息之间的合成系统标注（`SystemMessageStyle::{Info,Warning,Error,Compact}`；`Error` 走 `messages::render_system_api_error(msg, retry, width)` 渲染为红色 `API Error` 块，按终端宽度换行、不截断） |
-| `input` | `String` | 输入框当前文本 |
 | `prompt_input` | `PromptInputState` | 提示输入组件状态 |
-| `input_history` | `Vec<String>` | 输入历史（↑/↓ 回溯） |
-| `history_index` | `Option<usize>` | 当前回溯到的历史条目下标 |
 | `scroll_offset` | `usize` | 消息窗格滚动偏移 |
 | `is_streaming` | `bool` | 是否正在流式接收回复 |
 | `streaming_text` | `String` | 流式接收中的正文文本 |
@@ -80,7 +166,6 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `notifications` | `NotificationQueue` | 警告/错误通知队列，渲染在 model/mode 行右侧的提示槽（错误持久、警告 5s 过期） |
 | `spinner_verb` | `Option<String>` | 流式时 spinner 旁随机显示的动词 |
 | `should_exit` | `bool` | 退出标志 |
-| `show_help` | `bool` | 是否显示帮助 |
 | `kitty_keyboard_active` | `bool` | 终端是否支持 kitty 键盘协议；决定是否对可打印键重新应用 Shift 映射（issue #183） |
 
 ### 4.3 扩展状态（模型 / 凭证 / 模式）
@@ -100,9 +185,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `agent_mode` | `Option<String>` | 当前代理模式："build" / "plan" |
 | `accent_color` | `Color` | 由代理模式派生的强调色（Build=粉，Plan=蓝） |
 | `agent_mode_changed` | `bool` | `cycle_agent_mode` 设置，主循环据此更新查询配置和工具列表 |
-| `agent_status` | `Vec<(String, String)>` | 子代理状态列表 |
 | `keybindings` | `KeybindingResolver` | 键位解析器（加载用户自定义键位） |
-| `cursor_pos` | `usize` | 输入框内光标位置（字节偏移） |
 
 ### 4.4 滚动 / Token 警告
 
@@ -131,7 +214,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `help_overlay` | `HelpOverlay` | 全屏帮助覆盖层（? / F1），启动时从 `help_overlay_entries()` 填充 |
+| `help_dialog` | `HelpDialogState` | 帮助对话框（? / F1 / `/help`），启动时从 `help_dialog_entries()` 填充；双栏：左键位表 + 右斜杠命令表 |
 | `bridge_state` | `BridgeConnectionState` | Bridge（远程会话）连接状态 |
 | `plugin_hints` | `Vec<PluginHintBanner>` | 插件提示横幅 |
 | `session_title` | `Option<String>` | 状态栏显示的会话标题 |
@@ -197,7 +280,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `onboarding_dialog` | `OnboardingDialogState` | 首次启动欢迎向导 |
-| `effort_picker` | `EffortPickerState` | 思考力度选择器（/effort 无参数时） |
+| `effort_dialog` | `DialogSelectState` | 思考力度选择器（`/effort` 无参数时）——复用通用列表选择控件，非专用控件 |
 | `key_input_dialog` | `KeyInputDialogState` | API Key 输入框（从 /connect 打开） |
 | `custom_provider_dialog` | `CustomProviderDialogState` | 自定义 provider（URL + Key）对话框 |
 | `free_mode_dialog` | `FreeModeDialogState` | "Free" 复合 provider 设置（警告 + 2 个 API Key） |
@@ -287,7 +370,8 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 | `last_click_time` | `Option<Instant>` | pub | 上次左键点击时间（双/三击检测） |
 | `last_click_position` | `Option<(u16, u16)>` | pub | 上次左键点击位置 |
 | `click_count` | `u32` | pub | 连续点击计数：1=单击、2=双击、3+=三击 |
-| `context_menu_state` | `Option<ContextMenuState>` | pub | 上下文菜单状态（位置 + 选中项） |
+| `context_menu` | `DialogSelectState` | pub | 右键菜单——复用通用列表选择控件（与 `/effort` 同形） |
+| `context_menu_kind` | `Option<ContextMenuKind>` | pub | 菜单作用目标（消息下标 / 文本选区）；关闭时为 None |
 | `scroll_accel` | `f32` | **私有** | 滚动事件加速度倍率（触控板手感） |
 | `scroll_last_time` | `Option<Instant>` | **私有** | 上次滚动事件时间（突发检测） |
 
@@ -318,7 +402,7 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 1. **单一大状态对象**：`App` 采用"上帝对象"模式集中全部 UI 状态，子模块（keys/messages/mouse/views…）通过 `impl App` 分文件实现行为，避免单文件膨胀。
 2. **渲染缓存回写**：渲染器把区域矩形、最大滚动量等写回 `Cell` 字段，下一帧的鼠标/键盘处理据此做命中测试与钳制 —— 形成渲染与输入的帧间契约。
 3. **pending 标志 + channel** 的异步协作模式：UI 主循环不做阻塞 IO，通过 `*_pending: bool` 请求主循环派生 tokio 任务，用 `*_rx: mpsc::Receiver` 每帧 drain 结果（模型列表、会话列表、最近会话、用户提问等）。
-4. **双列表同步**：`messages`（真实对话）与 `display_messages`（含系统标注的展示列表）保持同步，渲染器只需遍历后者。
+4. **转录数据源**：`messages` 保存真实对话，`system_annotations` 保存仅用于展示的合成标注；渲染时按消息索引合并绘制，避免将展示标注写回 provider 对话历史。`PromptInputState` 是输入文本、光标和历史的唯一状态来源。
 5. **会话级信任不落盘**：`mcp_session_trusted`、`bash_prefix_allowlist` 等仅存活于本次会话，与持久化审批（`mcp_project_root`）严格区分。
 
 ## 5. 渲染层
@@ -367,17 +451,18 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 
 - **权限/确认**：`dialogs/permission.rs`(1728，权限/确认对话框 + MCP 审批)、`dialogs/bypass_permissions_dialog.rs`（--dangerously-skip-permissions 启动确认）
 - **提问/表单**：`dialogs/ask_user_dialog.rs`（AskUserQuestion 弹窗）、`dialogs/elicitation_dialog.rs`(797，MCP elicitation 表单)
-- **模型/effort**：`dialogs/model_picker.rs`(1585)、`effort_picker.rs`(1004)
+- **模型/effort**：`dialogs/model_picker.rs`(1585)；`/effort` 无参数时复用 `dialogs/dialog_select.rs` 的通用列表选择控件（无专用渲染）
 - **会话**：`dialogs/session_browser.rs`(605)、`dialogs/session_branching.rs`（Ctrl+B 分支）、`dialogs/export_dialog.rs`、`dialogs/memory_file_selector.rs`
 - **代码视图**：`dialogs/diff_viewer.rs`(1305，两栏 diff)
 - **系统状态**：`dialogs/stats_dialog.rs`(914)、`dialogs/hooks_config_menu.rs`（Hooks 只读浏览器）
 - **设置/引导**：`dialogs/settings_screen.rs`（全屏可搜索设置屏）、`dialogs/theme_screen.rs`（主题选择器）、`dialogs/onboarding_dialog.rs`、`dialogs/invalid_config_dialog.rs`、`dialogs/import_config_dialog.rs`
 - **认证/账户**：`dialogs/device_auth_dialog.rs`（设备码 OAuth）、`dialogs/key_input_dialog.rs`、`dialogs/custom_provider_dialog.rs`、`dialogs/free_mode_dialog.rs`
 - **通用控件**：`dialogs/dialog_select.rs`(621，可复用模糊搜索选择列表)、`dialogs/dialog.rs`（基座）
+- **模态按键层**：`dialogs/modal_keys.rs`（`handle_modal_key(app, key)`）：所有模态共用的唯一按键入口，按优先级把按键交给当前可见的模态并执行其确认副作用；`Dialogs are modal`，未识别的按键一律被吞掉，不会泄漏到主界面
 - **问卷/引导弹窗**：`dialogs/feedback_survey.rs`、`dialogs/desktop_upsell_startup.rs`
 - **输入辅助**：`file_injection.rs`（@file 引用解析）、`dialogs/file_injection_dialog.rs`、`message_copy.rs`(87，剪贴板写入)
 - **连接**：`bridge_state.rs`、`plugin_views.rs`
-- **overlays.rs**(592)：共享模态 chrome（`ModalLayout`、深色遮罩、标题栏、搜索行）与帮助 overlay（`HelpOverlay`）；其余覆盖层/对话框一律位于 `dialogs/` 并基于 `DialogCore`
+- **overlays.rs**(267)：只保留**共享模态 chrome**（`ModalLayout`、`centered_rect`、深色遮罩、标题栏、搜索行）；所有覆盖层/对话框（含帮助 `dialogs/help_dialog.rs`）均在 `dialogs/` 且基于 `DialogCore`
 - `input.rs`：斜杠命令解析（`is_slash_command`/`parse_slash_command`）
 
 ## 7. tests/
@@ -385,6 +470,15 @@ pub fn try_copy_to_clipboard(text: &str) -> bool;        // crate 级 API（lib.
 `diff_viewer.rs`、`markdown_enhancements.rs`、`render_snapshots.rs`（ratatui TestBackend 渲染快照）、`app/tests.rs`。
 
 ## 8. 设计要点
+### 8.1 键盘输入的两层结构
+
+键盘处理只有两层，`App::handle_key_event` 是唯一入口：
+
+1. **模态层**（`dialogs/modal_keys.rs::handle_modal_key`）：只要有任何模态可见，它就无条件拥有键盘——按键交给该模态的 `DialogBehavior::handle_key`（`Esc`/`Tab` 与 `on_key` 都在模态自身实现），随后由该层执行模态的确认副作用（激活 provider、写模型、导出等）。模态实现全部位于 `dialogs/*`；唯一的非 `DialogCore` 例外是权限弹窗，它经 `dialogs::permission::handle_permission_key(app, key)` 接入（因为 CLI 主循环还要拿 `selected_key()` 回送 `decision_tx`）。`app/keys.rs` 不含任何模态分支。
+2. **主界面层**（`app/keys.rs::handle_main_key`）：仅在没有模态可见时运行——输入框编辑、滚动、全局快捷键、键位解析。
+
+新增模态无需改动 `app/keys.rs`：在 `App` 加状态、在 `modal_keys.rs` 加一条分支、在 `render.rs` 渲染，`App::modal_states()`（`app/views.rs`）驱动的 `every_registered_modal_renders_and_captures_input` 测试会校验三者一致。
+
 
 1. **主循环归属**：`App::run` 只负责输入/渲染；真正的"用户回合"驱动（调用 `run_query_loop`、goal continuation）在 `crates/cli` 的 REPL 中完成。
 2. **单一大状态对象**：`App` 集中全部 UI 状态，行为按子模块（keys/mouse/views…）分文件 `impl App`。

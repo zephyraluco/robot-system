@@ -73,8 +73,6 @@ impl App {
             self.prompt_input.history.push(input.clone());
             self.prompt_input.history_pos = None;
             self.prompt_input.history_draft.clear();
-            self.input_history = self.prompt_input.history.clone();
-            self.history_index = self.prompt_input.history_pos;
         }
         self.refresh_prompt_input();
         input

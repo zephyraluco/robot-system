@@ -58,7 +58,7 @@ pub trait SlashCommand: Send + Sync {
 
 - `find_command(name)`：按名字或别名查找（自动剥 `/` 前缀）。
 - **`execute_command(input, ctx)`（总入口）** 按顺序解析：内置命令 → `settings.commands` 用户自定义模板（支持 `$ARGUMENTS`/`$1`/`$2` 占位）→ `.claurst/skills/` 及 git URL 发现的技能 → 插件命令（`PluginSlashCommandAdapter`）。返回 `None` 表示不是 slash 命令。
-- `build_help_entries()`：为 TUI HelpOverlay 生成条目（归类：Conversation/Settings/Usage & Cost/System/Auth & Permissions/Project/Integrations/Sessions & Remote/AI & Thinking/Tools & Extras/General）。
+- `build_help_entries()`：为 TUI 帮助对话框（`dialogs::help_dialog`）生成条目（归类：Conversation/Settings/Usage & Cost/System/Auth & Permissions/Project/Integrations/Sessions & Remote/AI & Thinking/Tools & Extras/General）。
 
 ### named command 框架（`named_commands.rs`）
 

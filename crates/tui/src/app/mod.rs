@@ -14,7 +14,7 @@ mod types;
 mod views;
 
 pub use types::{
-    ContextMenuKind, DisplayMessage, FocusTarget,
+    ContextMenuKind, FocusTarget,
     RecentSession, SystemAnnotation, SystemMessageStyle, ToolStatus,
     ToolUseBlock, TurnMetadata, recent_session_label,
 };
@@ -34,7 +34,7 @@ use crate::dialogs::diff_viewer::DiffViewerState;
 use crate::dialogs::export_dialog::ExportDialogState;
 use crate::dialogs::import_config_dialog::ImportConfigDialogState;
 use crate::dialogs::model_picker::{EffortLevel, ModelPickerState};
-use crate::overlays::HelpOverlay;
+use crate::dialogs::help_dialog::HelpDialogState;
 use crate::notifications::NotificationQueue;
 use crate::plugin_views::PluginHintBanner;
 use crate::prompt_input::PromptInputState;
@@ -43,9 +43,8 @@ use crate::dialogs::settings_screen::SettingsScreen;
 use crate::dialogs::stats_dialog::StatsDialogState;
 use crate::dialogs::theme_screen::ThemeScreen;
 use ratatui::style::Color;
-use commands::{PROMPT_SLASH_COMMANDS, help_overlay_entries};
+use commands::{PROMPT_SLASH_COMMANDS, help_dialog_entries};
 use providers::{import_config_picker_items, provider_picker_items};
-use types::ContextMenuState;
 
 /// Attempt to copy text to the system clipboard using platform CLI tools.
 /// Returns true if successful.
@@ -114,16 +113,9 @@ pub struct App {
     pub config: Config,
     pub cost_tracker: Arc<CostTracker>,
     pub messages: Vec<Message>,
-    /// Combined display list kept in sync with `messages`: real conversation turns
-    /// plus injected system annotations. Used by the renderer so it can iterate
-    /// a single sequence instead of merging two lists on every frame.
-    pub display_messages: Vec<DisplayMessage>,
     /// Synthetic system annotations interleaved between real messages at render time.
     pub system_annotations: Vec<SystemAnnotation>,
-    pub input: String,
     pub prompt_input: PromptInputState,
-    pub input_history: Vec<String>,
-    pub history_index: Option<usize>,
     pub scroll_offset: usize,
     pub is_streaming: bool,
     pub streaming_text: String,
@@ -136,7 +128,6 @@ pub struct App {
     /// Randomly chosen thinking verb shown next to the spinner while streaming.
     pub spinner_verb: Option<String>,
     pub should_exit: bool,
-    pub show_help: bool,
     /// Whether the terminal speaks the kitty keyboard protocol (progressive
     /// keyboard enhancement is active). When `false` — e.g. Windows conhost /
     /// CMD / legacy PowerShell and most default terminals — printable keys
@@ -172,11 +163,7 @@ pub struct App {
     /// Set by `cycle_agent_mode` so the main loop can update the query config
     /// and tool list to match the newly-selected agent.
     pub agent_mode_changed: bool,
-    pub agent_status: Vec<(String, String)>,
     pub keybindings: KeybindingResolver,
-
-    // Cursor position within input (byte offset)
-    pub cursor_pos: usize,
 
     // ---- Scrollback / auto-scroll -----------------------------------------
 
@@ -210,8 +197,8 @@ pub struct App {
 
     // ---- New overlay fields ------------------------------------------------
 
-    /// Full-screen help overlay (? / F1).
-    pub help_overlay: HelpOverlay,
+    /// Full-screen help dialog (? / F1) — a `DialogCore` modal like every other.
+    pub help_dialog: HelpDialogState,
     /// Bridge connection state.
     pub bridge_state: BridgeConnectionState,
     /// Plugin hint banners.
@@ -302,8 +289,9 @@ pub struct App {
     pub file_injection_force: bool,
     /// First-launch onboarding welcome dialog.
     pub onboarding_dialog: crate::dialogs::onboarding_dialog::OnboardingDialogState,
-    /// Effort-level picker (/effort with no args).
-    pub effort_picker: crate::effort_picker::EffortPickerState,
+    /// Effort-level picker dialog (/effort with no args) — the shared
+    /// `DialogSelectState` list picker, like every other picker in the TUI.
+    pub effort_dialog: DialogSelectState,
     /// API key input dialog (opened from /connect for key-based providers).
     pub key_input_dialog: crate::dialogs::key_input_dialog::KeyInputDialogState,
     /// Custom provider dialog for URL + API key input.
@@ -469,7 +457,11 @@ pub struct App {
     /// Count of consecutive clicks: 1 = single, 2 = double, 3+ = triple.
     pub click_count: u32,
     /// Context menu state: position and selected index.
-    pub context_menu_state: Option<ContextMenuState>,
+    /// Right-click context menu — the shared list picker (`DialogSelectState`),
+    /// like the `/effort` picker. `context_menu_kind` records what the open menu
+    /// acts on (`None` while closed).
+    pub context_menu: DialogSelectState,
+    pub context_menu_kind: Option<ContextMenuKind>,
 
     // ---- Scroll acceleration state (trackpad feel) -----------------------
     /// Current acceleration multiplier for scroll events.
@@ -533,12 +525,8 @@ impl App {
             config,
             cost_tracker,
             messages: Vec::new(),
-            display_messages: Vec::new(),
             system_annotations: Vec::new(),
-            input: String::new(),
             prompt_input: PromptInputState::new(),
-            input_history: Vec::new(),
-            history_index: None,
             scroll_offset: 0,
             is_streaming: false,
             streaming_text: String::new(),
@@ -547,7 +535,6 @@ impl App {
             notifications: NotificationQueue::new(),
             spinner_verb: None,
             should_exit: false,
-            show_help: false,
             kitty_keyboard_active: true,
             tool_use_blocks: Vec::new(),
             permission_request: None,
@@ -562,9 +549,7 @@ impl App {
             agent_mode: None,
             agent_mode_changed: false,
             accent_color: ACCENT_BUILD,
-            agent_status: Vec::new(),
             keybindings: KeybindingResolver::new(&user_keybindings),
-            cursor_pos: 0,
             auto_scroll: true,
             new_messages_while_scrolled: 0,
             rustle_current_pose: crate::rustle::RustlePose::Default,
@@ -579,10 +564,10 @@ impl App {
             last_turn_verb: None,
             turn_metadata: Vec::new(),
             transcript_version: Cell::new(0),
-            help_overlay: {
-                let mut overlay = HelpOverlay::new();
-                overlay.populate_from_commands(help_overlay_entries());
-                overlay
+            help_dialog: {
+                let mut dialog = HelpDialogState::new();
+                dialog.populate_from_commands(help_dialog_entries());
+                dialog
             },
             bridge_state: BridgeConnectionState::Disconnected,
             plugin_hints: Vec::new(),
@@ -621,7 +606,7 @@ impl App {
             file_injection_dialog: crate::dialogs::file_injection_dialog::FileInjectionDialogState::new(),
             file_injection_force: false,
             onboarding_dialog: crate::dialogs::onboarding_dialog::OnboardingDialogState::new(),
-            effort_picker: crate::effort_picker::EffortPickerState::new(),
+            effort_dialog: DialogSelectState::new("Select effort", Vec::new()),
             key_input_dialog: crate::dialogs::key_input_dialog::KeyInputDialogState::new(),
             custom_provider_dialog: crate::dialogs::custom_provider_dialog::CustomProviderDialogState::new(),
             free_mode_dialog: crate::dialogs::free_mode_dialog::FreeModeDialogState::new(),
@@ -703,7 +688,8 @@ impl App {
             last_click_time: None,
             last_click_position: None,
             click_count: 0,
-            context_menu_state: None,
+            context_menu: DialogSelectState::new("Message Actions", Vec::new()),
+            context_menu_kind: None,
             scroll_accel: 3.0,
             scroll_last_time: None,
             bash_prefix_allowlist: std::collections::HashSet::new(),

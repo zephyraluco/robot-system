@@ -1,10 +1,11 @@
 //! Pointer input: mouse events, selection, context menu.
 
 use crate::dialogs::dialog::DialogBehavior;
-use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
+use crate::dialogs::dialog_select::SelectItem;
+use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
 use tracing::debug;
 use super::App;
-use super::types::{ContextMenuKind, ContextMenuItem, ContextMenuState, FocusTarget};
+use super::types::{ContextMenuKind, ContextMenuItem, FocusTarget};
 
 /// What a modal dialog's mouse dispatch decided the caller should do.
 enum DialogMouseAction {
@@ -120,13 +121,6 @@ impl App {
         }
     }
 
-    pub(super) fn context_menu_items(kind: ContextMenuKind) -> &'static [ContextMenuItem] {
-        match kind {
-            ContextMenuKind::Message { .. } => &[ContextMenuItem::Copy, ContextMenuItem::Fork],
-            ContextMenuKind::Selection => &[ContextMenuItem::Copy],
-        }
-    }
-
     pub(super) fn message_index_at_row(&self, row: u16) -> Option<usize> {
         self.message_row_map.borrow().get(&row).copied()
     }
@@ -137,57 +131,56 @@ impl App {
         *self.selection_text.borrow_mut() = String::new();
     }
 
-    /// Show context menu at the given position.
-    pub(super) fn show_context_menu(&mut self, x: u16, y: u16, kind: ContextMenuKind) {
-        self.context_menu_state = Some(ContextMenuState {
-            x,
-            y,
-            selected_index: 0,
-            kind,
-        });
+    /// Build the entries of the right-click menu for `kind`.
+    ///
+    /// The item `id` is what `execute_context_menu_item` maps back to a
+    /// `ContextMenuItem`, so the shared list widget stays free of menu semantics.
+    fn context_menu_entries(kind: ContextMenuKind) -> Vec<SelectItem> {
+        let specs: &[(ContextMenuItem, &str, &str)] = match kind {
+            ContextMenuKind::Message { .. } => &[
+                (ContextMenuItem::Copy, "Copy", "message text to clipboard"),
+                (ContextMenuItem::Fork, "Fork", "create a new session"),
+            ],
+            ContextMenuKind::Selection => &[
+                (ContextMenuItem::Copy, "Copy", "selection to clipboard"),
+            ],
+        };
+        specs
+            .iter()
+            .map(|(item, title, description)| SelectItem {
+                id: item.id().to_string(),
+                title: (*title).to_string(),
+                description: (*description).to_string(),
+                category: String::new(),
+                badge: None,
+            })
+            .collect()
     }
 
-    /// Dismiss the context menu.
-    pub(super) fn dismiss_context_menu(&mut self) {
-        self.context_menu_state = None;
+    /// Open the right-click menu for `kind` as a centred list modal.
+    pub(crate) fn show_context_menu(&mut self, kind: ContextMenuKind) {
+        self.context_menu.items = Self::context_menu_entries(kind);
+        self.context_menu.open();
+        self.context_menu_kind = Some(kind);
     }
 
-    /// Handle context menu navigation with arrow keys.
-    pub(super) fn navigate_context_menu(&mut self, direction: KeyCode) {
-        if let Some(mut menu) = self.context_menu_state {
-            let item_count = Self::context_menu_items(menu.kind).len();
-            if item_count == 0 {
-                self.context_menu_state = Some(menu);
-                return;
-            }
-            match direction {
-                KeyCode::Up => {
-                    if menu.selected_index == 0 {
-                        menu.selected_index = item_count - 1;
-                    } else {
-                        menu.selected_index -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    menu.selected_index = (menu.selected_index + 1) % item_count;
-                }
-                _ => return,
-            }
-            self.context_menu_state = Some(menu);
+    /// Close the context menu and forget what it was acting on.
+    pub(crate) fn dismiss_context_menu(&mut self) {
+        self.context_menu.close();
+        self.context_menu_kind = None;
+    }
+
+    /// Run the highlighted menu entry and close the menu.
+    pub(crate) fn execute_context_menu_item(&mut self) {
+        let kind = self.context_menu_kind;
+        let Some(selected) = self.context_menu.take_selected() else {
+            self.dismiss_context_menu();
+            return;
+        };
+        self.context_menu_kind = None;
+        if let (Some(kind), Some(item)) = (kind, ContextMenuItem::from_id(&selected.id)) {
+            self.handle_context_menu_action(item, kind);
         }
-    }
-
-    /// Execute the currently selected context menu item.
-    pub(super) fn execute_context_menu_item(&mut self) {
-        if let Some(menu) = self.context_menu_state {
-            let items = Self::context_menu_items(menu.kind);
-
-            if menu.selected_index < items.len() {
-                let item = items[menu.selected_index];
-                self.handle_context_menu_action(item, menu.kind);
-            }
-        }
-        self.dismiss_context_menu();
     }
 
     /// Handle a context menu action.
@@ -289,34 +282,8 @@ impl App {
         }
 
         // Fast-reject mouse-move events — they flood at 60+ Hz and we don't
-        // need hover tracking. Exception: context menu needs hover to update
-        // the selected item highlight.
+        // need hover tracking (the context menu is a click-driven list modal).
         if matches!(mouse_event.kind, MouseEventKind::Moved) {
-            if let Some(menu) = self.context_menu_state.as_mut() {
-                let items = Self::context_menu_items(menu.kind);
-                let item_labels: Vec<&str> = items.iter().map(|i| match i {
-                    ContextMenuItem::Copy => "Copy",
-                    ContextMenuItem::Fork => "Fork new chat",
-                }).collect();
-                let menu_width = (item_labels.iter().map(|l| l.len()).max().unwrap_or(4) + 4) as u16;
-                let menu_height = items.len() as u16 + 2;
-                let screen = self.last_msg_area.get();
-                let menu_x = menu.x.min(screen.x.saturating_add(screen.width).saturating_sub(menu_width + 1));
-                let menu_y = menu.y.min(screen.y.saturating_add(screen.height).saturating_sub(menu_height + 1));
-                let inner_y = menu_y + 1;
-                let col = mouse_event.column;
-                let row = mouse_event.row;
-                if col >= menu_x
-                    && col < menu_x.saturating_add(menu_width)
-                    && row >= inner_y
-                    && row < inner_y.saturating_add(items.len() as u16)
-                {
-                    let hovered = (row - inner_y) as usize;
-                    if hovered < items.len() {
-                        menu.selected_index = hovered;
-                    }
-                }
-            }
             return;
         }
 
@@ -390,20 +357,12 @@ impl App {
                     && mouse_event.row < msg_area.y.saturating_add(msg_area.height)
                 {
                     if let Some(message_index) = self.message_index_at_row(mouse_event.row) {
-                        self.show_context_menu(
-                            mouse_event.column,
-                            mouse_event.row,
-                            ContextMenuKind::Message { message_index },
-                        );
+                        self.show_context_menu(ContextMenuKind::Message { message_index });
                     } else {
                         self.dismiss_context_menu();
                     }
                 } else if has_selection {
-                    self.show_context_menu(
-                        mouse_event.column,
-                        mouse_event.row,
-                        ContextMenuKind::Selection,
-                    );
+                    self.show_context_menu(ContextMenuKind::Selection);
                 } else {
                     self.dismiss_context_menu();
                 }
@@ -416,41 +375,6 @@ impl App {
 
             // ---- Text selection / focus routing -------------------------
             MouseEventKind::Down(MouseButton::Left) => {
-                // If a context menu is open, check if the click is on a menu item.
-                // Must replicate the same position clamping as the renderer.
-                if let Some(menu) = self.context_menu_state {
-                    let items = Self::context_menu_items(menu.kind);
-                    let item_labels: Vec<&str> = items.iter().map(|i| match i {
-                        ContextMenuItem::Copy => "Copy",
-                        ContextMenuItem::Fork => "Fork new chat",
-                    }).collect();
-                    let menu_width = (item_labels.iter().map(|l| l.len()).max().unwrap_or(4) + 4) as u16;
-                    let menu_height = items.len() as u16 + 2; // +2 for border
-                    // Clamp to screen bounds (same as render_context_menu)
-                    let screen = self.last_msg_area.get();
-                    let menu_x = menu.x.min(screen.x.saturating_add(screen.width).saturating_sub(menu_width + 1));
-                    let menu_y = menu.y.min(screen.y.saturating_add(screen.height).saturating_sub(menu_height + 1));
-                    let col = mouse_event.column;
-                    let row = mouse_event.row;
-                    // Inner area starts 1 past the border
-                    let inner_y = menu_y + 1;
-                    if col >= menu_x
-                        && col < menu_x.saturating_add(menu_width)
-                        && row >= inner_y
-                        && row < inner_y.saturating_add(items.len() as u16)
-                    {
-                        let clicked_index = (row - inner_y) as usize;
-                        if clicked_index < items.len() {
-                            self.context_menu_state.as_mut().unwrap().selected_index = clicked_index;
-                            self.execute_context_menu_item();
-                            return;
-                        }
-                    }
-                    // Click was outside the menu — just dismiss it
-                    self.dismiss_context_menu();
-                    return;
-                }
-
                 let input_area = self.last_input_area.get();
                 let selectable_area = self.last_selectable_area.get();
 
@@ -535,9 +459,6 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                // Dismiss context menu on drag
-                self.dismiss_context_menu();
-
                 // Continue drag — clamp to the selectable frame bounds so dragging
                 // outside extends selection to the edge rather than cancelling.
                 if self.selection_anchor.is_some() {
@@ -573,7 +494,9 @@ impl App {
     /// Route a mouse event through the generic DialogBehavior pipeline for any
     /// visible DialogCore-based modal dialog. Returns `true` when a dialog
     /// consumed the event (modal dialogs swallow every mouse event while open).
-    /// Priority order mirrors the keyboard dispatch in keys.rs.
+    /// Dispatch order follows the intended modal priority. Keep this aligned
+    /// with keyboard routing and the render stack; shared modal registration
+    /// tests cover the common capture and gate contracts.
     fn route_modal_dialog_mouse(&mut self, mouse_event: MouseEvent) -> bool {
         macro_rules! route {
             ($dialog:expr) => {{
@@ -623,6 +546,15 @@ impl App {
         }
         if self.model_picker.is_visible() {
             route!(&mut self.model_picker);
+        }
+        if self.help_dialog.is_visible() {
+            route!(&mut self.help_dialog);
+        }
+        if self.context_menu.is_visible() {
+            route!(&mut self.context_menu);
+        }
+        if self.effort_dialog.is_visible() {
+            route!(&mut self.effort_dialog);
         }
         if self.session_branching.is_visible() {
             route!(&mut self.session_branching);

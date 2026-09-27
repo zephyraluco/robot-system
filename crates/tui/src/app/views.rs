@@ -6,6 +6,46 @@ use crate::dialogs::export_dialog::ExportFormat;
 use super::App;
 
 impl App {
+    /// The canonical inventory used by the global modal gate and its
+    /// consistency tests. Keep this list aligned with modal rendering and
+    /// keyboard/mouse dispatch when adding or removing a modal state.
+    pub(super) fn modal_states(&self) -> impl Iterator<Item = (&'static str, bool)> + '_ {
+        [
+            ("permission", self.permission_request.is_some()),
+            ("help", self.help_dialog.is_visible()),
+            ("settings", self.settings_screen.is_visible()),
+            ("theme", self.theme_screen.is_visible()),
+            ("stats", self.stats_dialog.is_visible()),
+            ("diff", self.diff_viewer.is_visible()),
+            ("feedback", self.feedback_survey.is_visible()),
+            ("memory selector", self.memory_file_selector.is_visible()),
+            ("hooks", self.hooks_config_menu.is_visible()),
+            ("desktop upsell", self.desktop_upsell.is_visible()),
+            ("import config", self.import_config_dialog.is_visible()),
+            ("invalid config", self.invalid_config_dialog.is_visible()),
+            ("bypass permissions", self.bypass_permissions_dialog.is_visible()),
+            ("ask user", self.ask_user_dialog.is_visible()),
+            ("onboarding", self.onboarding_dialog.is_visible()),
+            ("import picker", self.import_config_picker.is_visible()),
+            ("connect picker", self.connect_dialog.is_visible()),
+            ("key input", self.key_input_dialog.is_visible()),
+            ("custom provider", self.custom_provider_dialog.is_visible()),
+            ("free mode", self.free_mode_dialog.is_visible()),
+            ("device auth", self.device_auth_dialog.is_visible()),
+            ("command palette", self.command_palette.is_visible()),
+            ("elicitation", self.elicitation.is_visible()),
+            ("model picker", self.model_picker.is_visible()),
+            ("effort picker", self.effort_dialog.is_visible()),
+            ("session browser", self.session_browser.is_visible()),
+            ("session branching", self.session_branching.is_visible()),
+            ("export", self.export_dialog.is_visible()),
+            ("MCP approval", self.mcp_approval.is_visible()),
+            ("file injection", self.file_injection_dialog.is_visible()),
+            ("context menu", self.context_menu.is_visible()),
+        ]
+        .into_iter()
+    }
+
     pub(super) fn close_secondary_views(&mut self) {
         self.stats_dialog.close();
         self.diff_viewer.close();
@@ -13,6 +53,7 @@ impl App {
         self.memory_file_selector.close();
         self.hooks_config_menu.close();
         self.model_picker.close();
+        self.effort_dialog.close();
         self.session_browser.close();
         self.session_branching.close();
         self.export_dialog.dismiss();
@@ -26,41 +67,12 @@ impl App {
         self.device_auth_dialog.close();
         self.settings_screen.close();
         self.theme_screen.close();
+        self.context_menu.close();
+        self.context_menu_kind = None;
     }
 
     pub fn any_modal_open(&self) -> bool {
-        self.permission_request.is_some()
-            || self.help_overlay.visible
-            || self.show_help
-            || self.settings_screen.is_visible()
-            || self.theme_screen.is_visible()
-            || self.stats_dialog.is_visible()
-            || self.diff_viewer.is_visible()
-            || self.feedback_survey.is_visible()
-            || self.memory_file_selector.is_visible()
-            || self.hooks_config_menu.is_visible()
-            || self.desktop_upsell.is_visible()
-            || self.import_config_dialog.is_visible()
-            || self.invalid_config_dialog.is_visible()
-            || self.bypass_permissions_dialog.is_visible()
-            || self.ask_user_dialog.is_visible()
-            || self.onboarding_dialog.is_visible()
-            || self.import_config_picker.is_visible()
-            || self.connect_dialog.is_visible()
-            || self.key_input_dialog.is_visible()
-            || self.custom_provider_dialog.is_visible()
-            || self.free_mode_dialog.is_visible()
-            || self.device_auth_dialog.is_visible()
-            || self.command_palette.is_visible()
-            || self.elicitation.is_visible()
-            || self.model_picker.is_visible()
-            || self.effort_picker.visible
-            || self.session_browser.is_visible()
-            || self.session_branching.is_visible()
-            || self.export_dialog.is_visible()
-            || self.mcp_approval.is_visible()
-            || self.file_injection_dialog.is_visible()
-            || self.context_menu_state.is_some()
+        self.modal_states().any(|(_, visible)| visible)
     }
 
     /// Perform the export based on the selected format. Returns the path written.
@@ -86,7 +98,7 @@ impl App {
         }
     }
 
-    pub(super) fn project_root(&self) -> std::path::PathBuf {
+    pub(crate) fn project_root(&self) -> std::path::PathBuf {
         self.config
             .project_dir
             .clone()
@@ -286,7 +298,7 @@ impl App {
 
     /// Persist `has_completed_onboarding = true` to the settings file.
     /// Best-effort: failures are silently ignored to not disrupt the session.
-    pub(super) fn persist_onboarding_complete() -> anyhow::Result<()> {
+    pub(crate) fn persist_onboarding_complete() -> anyhow::Result<()> {
         let mut settings = claurst_core::config::Settings::load_sync()?;
         settings.has_completed_onboarding = true;
         settings.save_sync()
@@ -302,7 +314,7 @@ impl App {
     /// file after the user accepts the Bypass Permissions warning, so the
     /// dialog is a one-time gate rather than shown on every launch.
     /// Best-effort: failures are silently ignored to not disrupt the session.
-    pub(super) fn persist_bypass_permissions_accepted() -> anyhow::Result<()> {
+    pub(crate) fn persist_bypass_permissions_accepted() -> anyhow::Result<()> {
         let mut settings = claurst_core::config::Settings::load_sync()?;
         settings.skip_dangerous_mode_permission_prompt = true;
         settings.save_sync()

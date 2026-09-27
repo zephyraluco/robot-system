@@ -1,7 +1,6 @@
 //! Keyboard input: normalization and key-event dispatch.
 
 use claurst_core::keybindings::{KeyContext, KeybindingResult, ParsedKeystroke};
-use crate::dialogs::dialog::DialogBehavior as _;
 use crate::input::normalize_char_with_shift;
 use crate::prompt_input::VimMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -151,499 +150,38 @@ impl App {
 
     /// Process a keyboard event. Returns `true` when the input should be
     /// submitted (Enter pressed with no blocking dialog).
+    ///
+    /// Keyboard input has exactly two layers:
+    ///
+    /// 1. **Modal layer** — while any modal is visible it owns the keyboard
+    ///    unconditionally (`crate::dialogs::modal_keys::handle_modal_key`).
+    ///    Modal key handling lives with the modals, never here.
+    /// 2. **Main UI layer** — prompt editing, scrolling and global shortcuts
+    ///    (`handle_main_key`), reached only when no modal is visible.
     pub fn handle_key_event(&mut self, key: KeyEvent) -> bool {
         // Make Ctrl shortcuts layout-independent before any handler runs: on
         // non-Latin layouts (Ukrainian / Russian, …) a Ctrl combo reports the
         // Cyrillic glyph at the physical key, which would otherwise miss the
-        // literal `KeyCode::Char(..)` arms below — including Ctrl+C / Ctrl+D,
-        // which are matched here rather than via the keybinding table (issue #47).
+        // literal `KeyCode::Char(..)` arms in the main-UI handler — including
+        // Ctrl+C / Ctrl+D, which are matched there rather than via the
+        // keybinding table (issue #47).
         let key = normalize_layout_shortcut_key(key);
 
-        // ---- DialogBehavior dialogs capture EVERY key -----------------------
-        // While one of these dialogs is visible it owns ALL keyboard input,
-        // unconditionally: no global shortcuts, no keybinding resolver, no
-        // paste handling, no Esc-dismiss-anything runs first. Every raw key
-        // is routed to the focused dialog; whatever the dialog ignores is
-        // swallowed by its modal capture (Ctrl+V included — list pickers
-        // don't accept pastes, so nothing can leak into the prompt).
-        if self.connect_dialog.is_visible()
-            || self.import_config_picker.is_visible()
-            || self.command_palette.is_visible()
-        {
-            if self.connect_dialog.is_visible() {
-                let out = self.connect_dialog.handle_key(key);
-                if out.is_confirmed() {
-                    if let Some(selected) = self.connect_dialog.take_selected() {
-                        self.activate_provider_from_picker(selected);
-                    }
-                }
-            } else if self.import_config_picker.is_visible() {
-                let out = self.import_config_picker.handle_key(key);
-                if out.is_confirmed() {
-                    if let Some(selected) = self.import_config_picker.take_selected() {
-                        if let Some(selection) = Self::import_selection_from_picker(&selected.id) {
-                            self.open_import_config_preview(selection);
-                        }
-                    }
-                }
-            } else {
-                let out = self.command_palette.handle_key(key);
-                if out.is_confirmed() {
-                    if let Some(selected) = self.command_palette.take_selected() {
-                        // Put the command in the input and signal for execution
-                        self.prompt_input.replace_text(selected.id.clone());
-                        return true; // signal to submit this as input
-                    }
-                }
-            }
-            return false;
+        match crate::dialogs::modal_keys::handle_modal_key(self, key) {
+            crate::dialogs::modal_keys::ModalKeyOutcome::NoModal => {}
+            crate::dialogs::modal_keys::ModalKeyOutcome::Consumed => return false,
+            crate::dialogs::modal_keys::ModalKeyOutcome::Submit => return true,
         }
 
-        // ---- Context menu handling (highest priority for menu navigation) ----
-        if self.context_menu_state.is_some() {
-            match key.code {
-                KeyCode::Esc => {
-                    self.dismiss_context_menu();
-                    return false;
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.navigate_context_menu(key.code);
-                    return false;
-                }
-                KeyCode::Enter => {
-                    self.execute_context_menu_item();
-                    return false;
-                }
-                _ => {}
-            }
-        }
+        self.handle_main_key(key)
+    }
 
-        // Bypass-permissions dialog: highest-priority gate — user must accept or the
-        // session exits immediately. Mirrors TS BypassPermissionsModeDialog.tsx.
-        // Accepting is remembered in settings.json (skipDangerousModePermissionPrompt)
-        // so the warning is shown once, not on every launch.
-        if self.bypass_permissions_dialog.is_visible() {
-            let out = self.bypass_permissions_dialog.handle_key(key);
-            if out.is_confirmed() {
-                // "Yes, I accept" — dismiss and continue.
-                let _ = Self::persist_bypass_permissions_accepted();
-            } else if out.is_cancelled() {
-                // "No, exit" — quit immediately.
-                self.should_exit = true;
-            }
-            return false;
-        }
-
-        // File injection dialog: shown when oversized files are detected in @refs.
-        if self.file_injection_dialog.is_visible() {
-            let out = self.file_injection_dialog.handle_key(key);
-            if out.is_cancelled() {
-                // Abort path (Esc, or Enter on directory-only): restore the
-                // stashed input to the prompt so the user can edit it.
-                if let Some(input) = self.file_injection_dialog.pending_input.clone() {
-                    self.set_prompt_text(input);
-                }
-            }
-            return false;
-        }
-
-        // Onboarding dialog: shown on first launch, dismissed with Enter/→/Esc.
-        if self.onboarding_dialog.is_visible() {
-            let out = self.onboarding_dialog.handle_key(key);
-            if out.is_confirmed() {
-                // Reached the final page — persist that onboarding is complete
-                // (best-effort).
-                let _ = Self::persist_onboarding_complete();
-            }
-            return false;
-        }
-
-        // Effort picker dialog (/effort). The selector is horizontal
-        // (Faster ← → Smarter), so ←/→ (and vi h/l) move the selection.
-        if self.effort_picker.visible {
-            match key.code {
-                KeyCode::Esc => self.effort_picker.close(),
-                KeyCode::Left | KeyCode::Char('h') => self.effort_picker.select_prev(),
-                KeyCode::Right | KeyCode::Char('l') => self.effort_picker.select_next(),
-                KeyCode::Enter => {
-                    // Applying `Ultracode` here is equivalent to typing the
-                    // `ultracode` keyword: it sets the effort to the top level.
-                    let chosen = self.effort_picker.current();
-                    self.effort_level = chosen;
-                    self.effort_picker.close();
-                    self.status_message = Some(format!(
-                        "Effort set to {} {}.",
-                        chosen.symbol(),
-                        chosen.label()
-                    ));
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        // Device code / browser auth dialog (GitHub Copilot, Anthropic OAuth).
-        // DialogCore-based: the dialog swallows every key while waiting; any
-        // key after Success closes it as `Confirmed` (store the credential),
-        // any key after Error / Esc closes it as `Cancelled`.
-        if self.device_auth_dialog.is_visible() {
-            let out = self.device_auth_dialog.handle_key(key);
-            if out.is_close() {
-                if out.is_confirmed() {
-                    if let crate::dialogs::device_auth_dialog::DeviceAuthStatus::Success(ref token) =
-                        self.device_auth_dialog.status
-                    {
-                        let provider_id = self.device_auth_dialog.provider_id.clone();
-                        let provider_name = self.device_auth_dialog.provider_name.clone();
-                        let token = token.clone();
-                        if provider_id == "anthropic-oauth" {
-                            // The claude.ai OAuth flow already persisted the Bearer
-                            // tokens via save_and_register; the anthropic provider
-                            // reads them directly. Switch to the real "anthropic"
-                            // provider without re-storing the token as an API key.
-                            self.device_auth_pending = None;
-                            self.device_auth_dialog.close();
-                            self.activate_provider(
-                                "anthropic".to_string(),
-                                "Anthropic".to_string(),
-                                "Connected to",
-                            );
-                            // The live client was built at startup with no
-                            // credential; ask the main loop to re-resolve the
-                            // freshly-saved Bearer and swap in a working client.
-                            self.pending_provider_reload = true;
-                            return false;
-                        }
-                        let credential = if provider_id == "github-copilot" {
-                            claurst_core::StoredCredential::OAuthToken {
-                                access: token.clone(),
-                                refresh: token,
-                                expires: 0,
-                            }
-                        } else {
-                            claurst_core::StoredCredential::ApiKey { key: token }
-                        };
-                        self.auth_store.set(
-                            &provider_id,
-                            credential,
-                        );
-                        self.activate_provider(provider_id, provider_name, "Connected to");
-                    }
-                }
-                self.device_auth_pending = None;
-            }
-            return false;
-        }
-
-        // Ask-user question dialog (AskUserQuestion tool)
-        if self.ask_user_dialog.is_visible() {
-            let out = self.ask_user_dialog.handle_key(key);
-            if out.is_cancelled() {
-                // Esc — send an empty reply so the tool result signals
-                // "user dismissed".
-                self.ask_user_dialog.dismiss();
-            }
-            return false;
-        }
-
-        if self.key_input_dialog.is_visible() {
-            // Ctrl/Super+V paste stays app-level (some terminals don't emit
-            // Event::Paste).
-            if key.code == KeyCode::Char('v')
-                && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
-            {
-                if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if !text.is_empty() {
-                        for ch in text.chars() {
-                            self.key_input_dialog.insert_char(ch);
-                        }
-                    }
-                }
-                return false;
-            }
-            let out = self.key_input_dialog.handle_key(key);
-            if out.is_confirmed() {
-                let provider_id = self.key_input_dialog.provider_id.clone();
-                let provider_name = self.key_input_dialog.provider_name.clone();
-                let api_key = self.key_input_dialog.take_key();
-                if !api_key.is_empty() {
-                    self.auth_store.set(
-                        &provider_id,
-                        claurst_core::StoredCredential::ApiKey { key: api_key },
-                    );
-                    self.activate_provider(provider_id, provider_name, "Connected to");
-                }
-            }
-            return false;
-        }
-
-        // "Free" composite-provider setup dialog (collects any subset of the
-        // free-tier upstream keys; min 1 to enable, more = better).
-        // DialogCore-based: navigation / editing / Enter live in the dialog's
-        // `on_key`; Ctrl/Super+V paste stays app-level because some
-        // terminals don't emit Event::Paste.
-        if self.free_mode_dialog.is_visible() {
-            if key.code == KeyCode::Char('v')
-                && (key.modifiers.contains(KeyModifiers::CONTROL)
-                    || key.modifiers.contains(KeyModifiers::SUPER))
-            {
-                // Paste clipboard text into the focused field (terminals
-                // that don't emit Event::Paste, e.g. Windows Terminal).
-                if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if !text.is_empty() {
-                        for ch in text.chars() {
-                            self.free_mode_dialog.insert_char(ch);
-                        }
-                    }
-                }
-                return false;
-            }
-            let out = self.free_mode_dialog.handle_key(key);
-            if out.is_confirmed() {
-                let values = self.free_mode_dialog.take_values();
-                for (provider_id, key) in values {
-                    self.auth_store.set(
-                        provider_id,
-                        claurst_core::StoredCredential::ApiKey { key },
-                    );
-                }
-                self.activate_provider(
-                    "free".to_string(),
-                    "Free Mode".to_string(),
-                    "Connected to",
-                );
-            }
-            return false;
-        }
-
-        // Custom provider dialog (URL + API key for OpenAI-compatible providers)
-        if self.custom_provider_dialog.is_visible() {
-            // Ctrl/Super+V paste stays app-level (some terminals don't emit
-            // Event::Paste).
-            if key.code == KeyCode::Char('v')
-                && (key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SUPER))
-            {
-                if let Some(text) = crate::image_paste::read_clipboard_text() {
-                    if !text.is_empty() {
-                        for ch in text.chars() {
-                            self.custom_provider_dialog.insert_char(ch);
-                        }
-                    }
-                }
-                return false;
-            }
-            let out = self.custom_provider_dialog.handle_key(key);
-            if out.is_confirmed() {
-                let provider_id = self.custom_provider_dialog.provider_id.clone();
-                let provider_name = self.custom_provider_dialog.provider_name.clone();
-                let (base_url, api_key) = self.custom_provider_dialog.take_values();
-                self.persist_custom_provider_base_url(&base_url);
-                self.auth_store.set(
-                    &provider_id,
-                    claurst_core::StoredCredential::ApiKey { key: api_key },
-                );
-                self.activate_provider(provider_id, provider_name, "Connected to");
-            }
-            return false;
-        }
-
-        // Import-config preview dialog
-        if self.import_config_dialog.is_visible() {
-            let out = self.import_config_dialog.handle_key(key);
-            if out.is_confirmed() {
-                self.perform_import_config();
-            }
-            return false;
-        }
-
-        // Invalid-config dialog intercepts Enter/Esc to dismiss
-        if self.invalid_config_dialog.is_visible() {
-            let _ = self.invalid_config_dialog.handle_key(key);
-            return false;
-        }
-
-        // Model picker — routed through the generic DialogBehavior pipeline
-        // (crate::dialogs::dialog): navigation, effort ←/→, filter typing and Esc are
-        // handled by the dialog itself; Enter returns Confirmed and the
-        // confirmed model is consumed here.
-        if self.model_picker.is_visible() {
-            let out = self.model_picker.handle_key(key);
-            if out.is_confirmed() {
-                if let Some((model_id, effort)) = self.model_picker.confirm() {
-                    // If user picked a model other than the fast-mode model
-                    // while fast mode was active, turn fast mode off.
-                    if self.fast_mode && !self.model_picker.is_selected_fast_mode_model(&model_id) {
-                        self.fast_mode = false;
-                    }
-                    if let Some(e) = effort {
-                        self.effort_level = e;
-                    }
-                    // Store explicit selections in the canonical
-                    // "provider/model" form for non-Anthropic providers.
-                    // The "free" composite's picker entries already carry
-                    // a routing prefix (`free/…`, `zen/…`, `openrouter/…`)
-                    // so re-prefixing would produce nonsense like
-                    // `free/free/auto`.
-                    let provider = self.config.provider.as_deref().unwrap_or("anthropic");
-                    let full_model = if provider == "anthropic" || provider == "free" {
-                        model_id.clone()
-                    } else {
-                        format!("{}/{}", provider, model_id)
-                    };
-                    self.set_model(full_model.clone());
-                    self.persist_provider_and_model();
-                    let effort_hint = effort.map(|e| format!(" [{}]", e.label())).unwrap_or_default();
-                    self.status_message = Some(format!("Model: {}{}", full_model, effort_hint));
-                }
-            }
-            return false;
-        }
-
-        // Session branching overlay intercepts navigation and Esc
-        if self.session_branching.is_visible() {
-            let out = self.session_branching.handle_key(key);
-            if out.is_confirmed() {
-                use crate::dialogs::session_branching::BranchBrowserMode;
-                match self.session_branching.mode {
-                    BranchBrowserMode::Browse => {
-                        if let Some(branch) = self.session_branching.selected_branch() {
-                            self.status_message = Some(format!("Switched to branch: {}", branch.name));
-                        }
-                        self.session_branching.close();
-                    }
-                    BranchBrowserMode::CreateNew => {
-                        if let Some((name, at_msg)) = self.session_branching.confirm_create_new() {
-                            self.status_message = Some(format!("Created branch: {} at message {}", name, at_msg));
-                            self.session_branching.close();
-                        }
-                    }
-                    BranchBrowserMode::ConfirmDelete => {
-                        if let Some(branch_id) = self.session_branching.confirm_delete() {
-                            self.status_message = Some(format!("Deleted branch: {}", branch_id));
-                        }
-                    }
-                }
-            }
-            return false;
-        }
-
-        // Session browser intercepts navigation and Esc
-        if self.session_browser.is_visible() {
-            let out = self.session_browser.handle_key(key);
-            if out.is_confirmed() {
-                use crate::dialogs::session_browser::SessionBrowserMode;
-                match self.session_browser.mode {
-                    SessionBrowserMode::Rename => {
-                        if let Some((_id, name)) = self.session_browser.confirm_rename() {
-                            self.session_title = Some(name.clone());
-                            self.status_message = Some(format!("Renamed to: {}", name));
-                        }
-                        self.session_browser.close();
-                    }
-                    SessionBrowserMode::Confirm => {
-                        self.session_browser.close();
-                    }
-                    _ => {}
-                }
-            }
-            return false;
-        }
-
-        // Export dialog key handling
-        if self.export_dialog.is_visible() {
-            let out = self.export_dialog.handle_key(key);
-            if out.is_confirmed() {
-                let _ = self.perform_export();
-            }
-            return false;
-        }
-
-        // MCP approval dialog — routed through the generic DialogBehavior
-        // pipeline. Esc → Cancelled (deny); Enter / digit / n → Confirmed with
-        // the highlighted choice.
-        if self.mcp_approval.is_visible() {
-            let out = self.mcp_approval.handle_key(key);
-            if out.is_cancelled() {
-                self.handle_mcp_approval_decision(crate::dialogs::McpApprovalChoice::Deny);
-            } else if out.is_confirmed() {
-                let choice = self.mcp_approval.confirm();
-                self.handle_mcp_approval_decision(choice);
-            }
-            return false;
-        }
-
-        // Feedback survey intercepts digit keys and Esc
-        if self.feedback_survey.is_visible() {
-            let _ = self.feedback_survey.handle_key(key);
-            return false;
-        }
-
-        // Memory file selector intercepts navigation and Esc
-        if self.memory_file_selector.is_visible() {
-            let _ = self.memory_file_selector.handle_key(key);
-            return false;
-        }
-
-        // Hooks config menu (drill-down browser) — routed through its
-        // DialogBehavior pipeline: Esc/q go back one level (closing only from
-        // the top-level event list), Enter drills in, ↑↓/jk select.
-        if self.hooks_config_menu.is_visible() {
-            let _ = self.hooks_config_menu.handle_key(key);
-            return false;
-        }
-
-        if self.diff_viewer.is_visible() {
-            // 'd' toggles the diff scope and needs the project root (on App).
-            if key.code == KeyCode::Char('d') && key.modifiers.is_empty() {
-                let root = self.project_root();
-                self.diff_viewer.toggle_diff_type(&root);
-                return false;
-            }
-            let _ = self.diff_viewer.handle_key(key);
-            return false;
-        }
-
-        if self.stats_dialog.is_visible() {
-            let _ = self.stats_dialog.handle_key(key);
-            return false;
-        }
-
-        // Settings screen intercepts keys. `handle_settings_key` adapts the
-        // screen's DialogBehavior pipeline and drains the pending `&mut Config`
-        // apply that the dialog itself cannot perform.
-        if self.settings_screen.is_visible() {
-            crate::dialogs::settings_screen::handle_settings_key(
-                &mut self.settings_screen,
-                &mut self.config,
-                key,
-            );
-            return false;
-        }
-
-        // Theme picker intercepts keys; `handle_theme_key` adapts the picker's
-        // DialogBehavior pipeline and returns the confirmed theme name.
-        if self.theme_screen.is_visible() {
-            if let Some(theme_name) =
-                crate::dialogs::theme_screen::handle_theme_key(&mut self.theme_screen, key)
-            {
-                self.apply_theme(&theme_name);
-            }
-            return false;
-        }
-
-        // Privacy screen intercepts keys
-        // Help overlay intercepts keys next
-        if self.help_overlay.visible {
-            return self.handle_help_overlay_key(key);
-        }
-
-        // Permission dialog mode intercepts most keys
-        if self.permission_request.is_some() {
-            self.handle_permission_key(key);
-            return false;
-        }
-
-        // Plugin hint dismiss
+    /// Main-UI key handling. Only reached when NO modal is visible: every modal
+    /// consumes its keys in `crate::dialogs::modal_keys` first, so nothing below
+    /// needs to know that modals exist.
+    fn handle_main_key(&mut self, key: KeyEvent) -> bool {
+        // Plugin hint dismiss: the banner is not a modal, so it is dismissed
+        // here while the main UI owns the keyboard.
         if key.code == KeyCode::Esc {
             if let Some(hint) = self.plugin_hints.iter_mut().find(|h| h.is_visible()) {
                 hint.dismiss();
@@ -651,24 +189,10 @@ impl App {
             }
         }
 
-        // Desktop upsell startup dialog
-        if self.desktop_upsell.is_visible() {
-            let _ = self.desktop_upsell.handle_key(key);
-            return false;
-        }
-
-        // MCP elicitation dialog — highest priority modal
-        if self.elicitation.is_visible() {
-            let out = self.elicitation.handle_key(key);
-            if out.is_cancelled() {
-                // Esc — queue a Cancelled result so the caller can take_result().
-                self.elicitation.cancel();
-            }
-            return false;
-        }
-
-        // ---- Keybinding processor (runs AFTER all dialog checks) ----------
-        let key_context = self.current_key_context();
+        // ---- Keybinding processor (runs AFTER the modal layer) -------------
+        // The modal layer already returned for every modal context, so this is
+        // always the chat context.
+        let key_context = KeyContext::Chat;
         if let Some(keystroke) = key_event_to_keystroke(&key) {
             let had_pending_chord = self.keybindings.has_pending_chord();
             match self.keybindings.process(keystroke, &key_context) {
@@ -800,8 +324,7 @@ impl App {
 
             // ---- Help overlay ------------------------------------------
             KeyCode::F(1) => {
-                self.show_help = !self.show_help;
-                self.help_overlay.toggle();
+                self.help_dialog.toggle();
             }
             KeyCode::Char('?')
                 if !self.is_streaming
@@ -810,8 +333,7 @@ impl App {
                     && !key.modifiers.contains(KeyModifiers::ALT)
                     && !key.modifiers.contains(KeyModifiers::SUPER) =>
             {
-                self.show_help = !self.show_help;
-                self.help_overlay.toggle();
+                self.help_dialog.toggle();
             }
             // With the kitty keyboard protocol, Shift+/ is reported as Char('/') with
             // SHIFT rather than Char('?'), so also accept that form for the help toggle.
@@ -829,8 +351,7 @@ impl App {
                     && !key.modifiers.contains(KeyModifiers::ALT)
                     && !key.modifiers.contains(KeyModifiers::SUPER) =>
             {
-                self.show_help = !self.show_help;
-                self.help_overlay.toggle();
+                self.help_dialog.toggle();
             }
 
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -865,11 +386,9 @@ impl App {
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.prompt_input.move_word_backward();
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.prompt_input.move_word_forward();
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.prompt_input.delete_word_at_cursor();
@@ -907,7 +426,6 @@ impl App {
                 } else {
                     self.prompt_input.move_left();
                 }
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::Right => {
                 if key.modifiers.contains(KeyModifiers::SUPER) {
@@ -917,15 +435,12 @@ impl App {
                 } else {
                     self.prompt_input.move_right();
                 }
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::Home => {
                 self.prompt_input.cursor = 0;
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::End => {
                 self.prompt_input.cursor = self.prompt_input.text.len();
-                self.sync_legacy_prompt_fields();
             }
             KeyCode::Tab => {
                 if !self.prompt_input.suggestions.is_empty() {
@@ -1074,63 +589,8 @@ impl App {
         let is_exit_key = key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char(c) if c == 'c' || c == 'd' || c == 'C' || c == 'D');
         if !is_exit_key {
             self.last_exit_key_warning = None;
-            self.exit_key_sequence_start = None;
         }
 
-        false
-    }
-
-    pub(super) fn current_key_context(&self) -> KeyContext {
-        if self.diff_viewer.is_visible() {
-            KeyContext::DiffDialog
-        } else if self.stats_dialog.is_visible() {
-            KeyContext::Select
-        } else if self.import_config_dialog.is_visible() {
-            KeyContext::Confirmation
-        } else if self.settings_screen.is_visible() {
-            KeyContext::Settings
-        } else if self.theme_screen.is_visible() {
-            KeyContext::ThemePicker
-        } else if self.help_overlay.visible {
-            KeyContext::Help
-        } else if self.permission_request.is_some() {
-            KeyContext::Confirmation
-        } else if self.show_help {
-            KeyContext::Help
-        } else {
-            KeyContext::Chat
-        }
-    }
-
-    pub(super) fn handle_help_overlay_key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Esc | KeyCode::F(1) => {
-                self.help_overlay.close();
-                self.show_help = false;
-            }
-            KeyCode::Char('?')
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT)
-                    && !key.modifiers.contains(KeyModifiers::SUPER) =>
-            {
-                self.help_overlay.close();
-                self.show_help = false;
-            }
-            KeyCode::Up => {
-                self.help_overlay.scroll_up();
-            }
-            KeyCode::Down => {
-                let max = 50u16; // generous upper bound; renderer will clamp
-                self.help_overlay.scroll_down(max);
-            }
-            KeyCode::Backspace => {
-                self.help_overlay.pop_filter_char();
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.help_overlay.push_filter_char(c);
-            }
-            _ => {}
-        }
         false
     }
 
@@ -1258,14 +718,12 @@ impl App {
             "goLineStart" => {
                 if !self.is_streaming {
                     self.prompt_input.cursor = 0;
-                    self.sync_legacy_prompt_fields();
                 }
                 false
             }
             "goLineEnd" => {
                 if !self.is_streaming {
                     self.prompt_input.cursor = self.prompt_input.text.len();
-                    self.sync_legacy_prompt_fields();
                 }
                 false
             }
@@ -1332,8 +790,7 @@ impl App {
                 false
             }
             "close" => {
-                self.show_help = false;
-                self.help_overlay.close();
+                self.help_dialog.close();
                 false
             }
             "select" => false,
@@ -1402,8 +859,7 @@ impl App {
             }
             "openHelp" => {
                 // Alt+H: Open help (alternative to F1)
-                self.show_help = !self.show_help;
-                self.help_overlay.toggle();
+                self.help_dialog.toggle();
                 false
             }
             "openModelPicker" => {
@@ -1452,58 +908,6 @@ impl App {
                 false
             }
             _ => false,
-        }
-    }
-
-    /// Handle a key event while a permission dialog is active.
-    ///
-    /// Routed through the dialog's `DialogBehavior` pipeline: `Confirmed`
-    /// means an option was chosen (record a bash prefix if applicable),
-    /// `Cancelled` means Esc (deny) — both dismiss the dialog.
-    pub(super) fn handle_permission_key(&mut self, key: KeyEvent) {
-        let out = match self.permission_request.as_mut() {
-            Some(pr) => pr.handle_key(key),
-            None => return,
-        };
-        if out.is_confirmed() {
-            // If the selected option is the prefix-allow option ('P'), record it.
-            self.maybe_record_bash_prefix();
-            self.permission_request = None;
-        } else if out.is_cancelled() {
-            self.permission_request = None;
-        }
-    }
-
-    /// If the active permission dialog's selected option is the prefix-allow
-    /// option ('P') for a Bash dialog, extract the suggested prefix and add it
-    /// to `bash_prefix_allowlist` so future requests with the same prefix are
-    /// silently approved.
-    pub(super) fn maybe_record_bash_prefix(&mut self) {
-        use crate::dialogs::PermissionDialogKind;
-        let pr = match self.permission_request.as_ref() {
-            Some(p) => p,
-            None => return,
-        };
-        // Only act on Bash dialogs where the selected option key is 'P'.
-        let selected_key = pr.options.get(pr.selected_option).map(|o| o.key);
-        if selected_key != Some('P') {
-            return;
-        }
-        if let PermissionDialogKind::Bash { command, .. } = &pr.kind {
-            // Always normalize to the first whitespace-delimited word so
-            // that the allowlist check in `bash_command_allowed_by_prefix`
-            // (which also uses `split_whitespace().next()`) matches correctly.
-            let first_word = command.split_whitespace().next().unwrap_or("").to_string();
-            if !first_word.is_empty() {
-                self.bash_prefix_allowlist.insert(first_word.clone());
-                // Persist so the "always allow" choice survives restarts.
-                if let Ok(mut settings) = claurst_core::config::Settings::load_sync() {
-                    if !settings.allowed_bash_prefixes.contains(&first_word) {
-                        settings.allowed_bash_prefixes.push(first_word);
-                        let _ = settings.save_sync();
-                    }
-                }
-            }
         }
     }
 
