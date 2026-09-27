@@ -106,21 +106,6 @@ impl App {
         Some((start, end, end_col))
     }
 
-    /// Find line boundaries for the row containing the click.
-    /// Returns (start_row, end_row) for the line.
-    #[allow(dead_code)]
-    fn find_line_boundaries(&self, row: u16) -> Option<(u16, u16)> {
-        let selectable_area = self.last_selectable_area.get();
-        let line_start = selectable_area.y;
-        let line_end = selectable_area.y.saturating_add(selectable_area.height).saturating_sub(1);
-
-        if row >= line_start && row <= line_end {
-            Some((row, row))
-        } else {
-            None
-        }
-    }
-
     pub(super) fn message_index_at_row(&self, row: u16) -> Option<usize> {
         self.message_row_map.borrow().get(&row).copied()
     }

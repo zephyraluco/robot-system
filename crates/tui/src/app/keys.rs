@@ -1033,24 +1033,6 @@ impl App {
         false
     }
 
-    /// Returns `true` when the app is in a state where the prompt can accept
-    /// regular text input. NOTE: this list predates the DialogSelect pickers
-    /// (connect dialog, command palette, …) and is NOT modal-complete —
-    /// use `paste_burst_allowed` for paste gating instead.
-    #[allow(dead_code)]
-    pub(super) fn prompt_is_accepting_text(&self) -> bool {
-        !self.is_streaming
-            && self.permission_request.is_none()
-            && !self.ask_user_dialog.is_visible()
-            && !self.settings_screen.is_visible()
-            && !self.theme_screen.is_visible()
-            && !self.custom_provider_dialog.is_visible()
-            && !self.key_input_dialog.is_visible()
-            && !self.free_mode_dialog.is_visible()
-            && !self.elicitation.is_visible()
-            && self.prompt_input.vim_mode == crate::prompt_input::VimMode::Insert
-    }
-
     /// Gate for paste-burst detection in the live CLI event loop: keystrokes
     /// are currently flowing into the prompt (no modal is capturing input and
     /// vim is in insert mode). Unlike `prompt_is_accepting_text`, streaming
