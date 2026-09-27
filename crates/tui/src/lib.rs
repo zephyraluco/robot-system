@@ -79,6 +79,8 @@ pub mod input;
 pub mod render;
 /// Post-paint OSC 8 hyperlink emission — makes URLs Ctrl/Cmd-clickable.
 pub mod osc8;
+/// Shared text helpers (word wrapping).
+pub(crate) mod text;
 /// All TUI dialog components (built on `dialogs::dialog`'s `DialogCore`).
 pub mod dialogs;
 /// Shared modal chrome and the help overlay.
