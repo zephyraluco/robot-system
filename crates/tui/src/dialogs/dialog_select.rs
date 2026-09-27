@@ -222,20 +222,27 @@ impl DialogSelectState {
     fn content_height(&self) -> u16 {
         let item_lines = self.filtered_indices.len() as u16;
         let category_count = if self.filter.is_empty() {
+            // Mirrors the header rule in `render_content`: the first item only
+            // opens a section when its category is non-empty, so an
+            // uncategorised list (e.g. the context menu) reserves no rows.
             let mut sections = 0u16;
-            let mut last_category: Option<&str> = None;
+            let mut last_category: &str = "";
             for &idx in &self.filtered_indices {
                 let category = self.items[idx].category.as_str();
-                if last_category != Some(category) {
+                if category != last_category {
                     sections += 1;
-                    last_category = Some(category);
+                    last_category = category;
                 }
             }
             sections
         } else {
             0
         };
-        (3 + item_lines + category_count * 2).max(8)
+        // `set_size` takes the TOTAL dialog height, so the 3 header rows
+        // (title / blank / search) and the 2 border rows must be included —
+        // otherwise the last rows of the list are clipped. Section headers are
+        // one blank row plus one header row each.
+        (item_lines + category_count * 2 + 5).max(8)
     }
 }
 
