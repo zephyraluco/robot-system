@@ -227,13 +227,7 @@ impl FreeModeDialogState {
 // ---------------------------------------------------------------------------
 
 impl DialogBehavior for FreeModeDialogState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     /// One focus zone per provider field: the pipeline's built-in Tab /
     /// Shift+Tab cycling then moves between fields, matching the old

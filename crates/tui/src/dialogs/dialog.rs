@@ -15,7 +15,8 @@
 // }
 //
 // impl DialogBehavior for MyDialog {
-//     fn core(&mut self) -> &mut DialogCore { &mut self.core }
+//     dialog_core_accessors!();
+//
 //     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
 //         // extra keys; Esc / Tab are already handled by the dispatch pipeline
 //         DialogOutcome::Ignored
@@ -40,12 +41,12 @@
 //   [`DialogBehavior::on_escape`] when `Esc` needs to do something first),
 //   `Tab` / `Shift+Tab` cycle focus zones.
 // * Everything else is first offered to `DialogBehavior::on_key`.
-// * Modal dialogs (the default) capture EVERY key and mouse event while open —
-//   even ones their behaviour ignores — so the UI underneath never reacts.
-//   Non-modal dialogs only capture events that land inside their rendered
-//   area and let the rest bubble up.
-// * A left click outside a modal dialog with `dismiss_on_outside_click()`
-//   closes it (returns `Cancelled`).
+// * Dialogs are always modal: while visible they capture EVERY key and mouse
+//   event — even ones their behaviour ignores — so the UI underneath never
+//   reacts. The caller only ever sees `Confirmed` / `Cancelled` (plus
+//   `Ignored` while the dialog is not visible).
+// * A left click outside a dialog with `dismiss_on_outside_click()` closes it
+//   (returns `Cancelled`); every other outside event is swallowed.
 
 use crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -61,6 +62,40 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::overlays::{begin_modal_frame, ModalLayout, CLAURST_ACCENT};
 
 // ---------------------------------------------------------------------------
+// Boilerplate remover
+// ---------------------------------------------------------------------------
+
+/// Generate the two `DialogBehavior` accessors for a dialog whose embedded
+/// core is the field `core`.
+///
+/// Every dialog implements [`DialogBehavior::core`] and
+/// [`DialogBehavior::core_shared`] the same three-line way, so a dialog can
+/// replace that boilerplate with one macro call and keep the rest of its
+/// `impl` block as ordinary Rust:
+///
+/// ```ignore
+/// impl DialogBehavior for MyDialog {
+///     dialog_core_accessors!();
+///
+///     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
+///         // …
+///     }
+/// }
+/// ```
+macro_rules! dialog_core_accessors {
+    () => {
+        fn core(&mut self) -> &mut $crate::dialogs::dialog::DialogCore {
+            &mut self.core
+        }
+
+        fn core_shared(&self) -> &$crate::dialogs::dialog::DialogCore {
+            &self.core
+        }
+    };
+}
+pub(crate) use dialog_core_accessors;
+
+// ---------------------------------------------------------------------------
 // Outcome
 // ---------------------------------------------------------------------------
 
@@ -69,8 +104,9 @@ use crate::overlays::{begin_modal_frame, ModalLayout, CLAURST_ACCENT};
 pub enum DialogOutcome {
     /// Event consumed; the dialog stays open.
     Handled,
-    /// The dialog is not interested; the event may bubble up
-    /// (only meaningful for non-modal dialogs).
+    /// The dialog is not interested in the event. Dialogs are modal, so the
+    /// event is still swallowed; the one observable effect is that an ignored
+    /// `Tab` / `Shift+Tab` falls back to focus-zone cycling.
     Ignored,
     /// The dialog closed with a positive/affirmative semantic (Enter, OK…).
     Confirmed,
@@ -130,8 +166,8 @@ pub trait DialogBehavior {
 
     /// Handle a key event not consumed by the built-in defaults
     /// (`Esc` → [`DialogBehavior::on_escape`], `Tab`/`Shift+Tab` cycle focus).
-    /// Return `Ignored` if the key is not relevant; modal dialogs capture it
-    /// anyway.
+    /// Return `Ignored` if the key is not relevant — it is still swallowed
+    /// (dialogs are modal), but an ignored `Tab` falls back to focus cycling.
     fn on_key(&mut self, _key: KeyEvent) -> DialogOutcome {
         DialogOutcome::Ignored
     }
@@ -146,8 +182,7 @@ pub trait DialogBehavior {
         DialogOutcome::Cancelled
     }
 
-    /// Handle a mouse event whose cursor is inside the dialog area
-    /// (or anywhere, for non-modal dialogs that chose to receive it).
+    /// Handle a mouse event whose cursor is inside the dialog area.
     fn on_mouse(&mut self, _mouse: MouseEvent) -> DialogOutcome {
         DialogOutcome::Ignored
     }
@@ -188,11 +223,12 @@ pub trait DialogBehavior {
         }
 
         let out = self.on_key(key);
-        if self.core().is_modal() && !out.is_close() {
-            // Modal dialogs swallow every key so nothing reaches the UI below.
-            DialogOutcome::Handled
-        } else {
+        // Dialogs are modal: every key is swallowed so nothing reaches the UI
+        // below. Only the closing outcomes are reported back to the caller.
+        if out.is_close() {
             out
+        } else {
+            DialogOutcome::Handled
         }
     }
 
@@ -203,31 +239,24 @@ pub trait DialogBehavior {
             return DialogOutcome::Ignored;
         }
 
-        let (modal, dismiss_outside) = {
-            let core = self.core();
-            (core.is_modal(), core.dismisses_on_outside_click())
-        };
+        let dismiss_outside = self.core().dismisses_on_outside_click();
         let inside = self.core().contains(mouse.column, mouse.row);
 
         if !inside {
-            match (modal, mouse.kind) {
-                // Click outside a dismissible modal dialog → close it.
-                (true, MouseEventKind::Down(MouseButton::Left)) if dismiss_outside => {
-                    self.core().close();
-                    return DialogOutcome::Cancelled;
-                }
-                // Modal: capture everything else outside too.
-                (true, _) => return DialogOutcome::Handled,
-                // Non-modal: let outside events bubble up.
-                (false, _) => return DialogOutcome::Ignored,
+            // A left click outside a dismissible dialog closes it; every other
+            // outside event is swallowed so nothing reaches the UI below.
+            if dismiss_outside && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.core().close();
+                return DialogOutcome::Cancelled;
             }
+            return DialogOutcome::Handled;
         }
 
         let out = self.on_mouse(mouse);
-        if modal && !out.is_close() {
-            DialogOutcome::Handled
-        } else {
+        if out.is_close() {
             out
+        } else {
+            DialogOutcome::Handled
         }
     }
 
@@ -280,8 +309,6 @@ pub struct DialogCore {
     height: u16,
     header_height: u16,
     footer_height: u16,
-    /// Modal dialogs capture all input while visible (default).
-    modal: bool,
     /// Close on left click outside the dialog (default `false`).
     dismiss_on_outside_click: bool,
     visible: bool,
@@ -302,7 +329,6 @@ impl DialogCore {
             height,
             header_height: 1,
             footer_height: 1,
-            modal: true,
             dismiss_on_outside_click: false,
             visible: false,
             focus_zone: 0,
@@ -330,7 +356,7 @@ impl DialogCore {
         self
     }
 
-    /// Close the dialog when a left click lands outside it (modal only).
+    /// Close the dialog when a left click lands outside it.
     pub fn dismiss_on_outside_click(mut self) -> Self {
         self.dismiss_on_outside_click = true;
         self
@@ -412,11 +438,6 @@ impl DialogCore {
         self.focus_zone = next as usize;
     }
 
-    /// Whether this dialog is modal (captures all input while visible).
-    pub fn is_modal(&self) -> bool {
-        self.modal
-    }
-
     /// Whether a left click outside the dialog closes it.
     pub fn dismisses_on_outside_click(&self) -> bool {
         self.dismiss_on_outside_click
@@ -463,76 +484,6 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
         w += cw;
     }
     out.push('…');
-    out
-}
-
-/// Word-wrap `text` to `max_width` display columns (hard-splits overlong words).
-/// Returns the wrapped lines as styled `Line`s.
-pub fn wrap_text(text: &str, max_width: usize, style: Style) -> Vec<Line<'static>> {
-    fn push_line(out: &mut Vec<Line<'static>>, line: &mut String, style: Style) {
-        out.push(Line::from(Span::styled(std::mem::take(line), style)));
-    }
-
-    let mut out: Vec<Line<'static>> = Vec::new();
-    if max_width == 0 {
-        return out;
-    }
-    for paragraph in text.split('\n') {
-        if paragraph.is_empty() {
-            out.push(Line::from(String::new()));
-            continue;
-        }
-        let mut current = String::new();
-        let mut current_w = 0usize;
-        for word in paragraph.split_whitespace() {
-            let mut word = word;
-            loop {
-                let word_w = word.width();
-                let sep = usize::from(!current.is_empty());
-                if current_w + word_w + sep <= max_width {
-                    if sep == 1 {
-                        current.push(' ');
-                        current_w += 1;
-                    }
-                    current.push_str(word);
-                    current_w += word_w;
-                    break;
-                }
-                if word_w > max_width {
-                    // Overlong word: flush the current line, then hard-split.
-                    if !current.is_empty() {
-                        push_line(&mut out, &mut current, style);
-                    }
-                    let mut take = String::new();
-                    let mut take_w = 0usize;
-                    let mut split_at = word.len();
-                    for (i, ch) in word.char_indices() {
-                        let cw = ch.width().unwrap_or(0);
-                        if take_w + cw > max_width {
-                            split_at = i;
-                            break;
-                        }
-                        take.push(ch);
-                        take_w += cw;
-                    }
-                    current.push_str(&take);
-                    push_line(&mut out, &mut current, style);
-                    current_w = 0;
-                    word = &word[split_at..];
-                    if word.is_empty() {
-                        break;
-                    }
-                    continue;
-                }
-                // Normal wrap: flush and retry the word on a fresh line.
-                push_line(&mut out, &mut current, style);
-                current_w = 0;
-            }
-        }
-        if !current.is_empty() {
-            out.push(Line::from(Span::styled(current, style)));
-        }
-    }
     out
 }
 
@@ -739,17 +690,9 @@ mod tests {
     }
 
     #[test]
-    fn text_helpers() {
+    fn truncate_to_width_shortens_with_ellipsis() {
         assert_eq!(truncate_to_width("hello", 10), "hello");
         assert_eq!(truncate_to_width("hello", 4).width(), 4);
-
-        let style = Style::default();
-        let wrapped = wrap_text("alpha beta gamma", 6, style);
-        let texts: Vec<String> = wrapped.iter().map(|l| l.to_string()).collect();
-        assert_eq!(texts, vec!["alpha", "beta", "gamma"]);
-
-        // Empty paragraph inside newlines is preserved.
-        let wrapped = wrap_text("a\n\nb", 10, style);
-        assert_eq!(wrapped.len(), 3);
+        assert!(truncate_to_width("hello", 4).ends_with('…'));
     }
 }

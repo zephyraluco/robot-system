@@ -307,13 +307,7 @@ impl Default for SettingsScreen {
 // ---------------------------------------------------------------------------
 
 impl DialogBehavior for SettingsScreen {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     /// `Esc` has dialog-specific precedence, so it is handled here rather than
     /// by the shared default (which would close unconditionally):

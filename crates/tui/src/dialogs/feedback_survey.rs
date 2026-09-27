@@ -125,13 +125,7 @@ impl Default for FeedbackSurveyState {
 }
 
 impl DialogBehavior for FeedbackSurveyState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     fn on_key(&mut self, key: KeyEvent) -> DialogOutcome {
         if let KeyCode::Char(c) = key.code {

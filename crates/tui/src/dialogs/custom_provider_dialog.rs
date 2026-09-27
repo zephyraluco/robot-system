@@ -122,13 +122,7 @@ impl CustomProviderDialogState {
 }
 
 impl DialogBehavior for CustomProviderDialogState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     /// Two focus zones (URL / API key): the pipeline's built-in Tab /
     /// Shift+Tab cycling switches fields via `core.focus_zone()`.

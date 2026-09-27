@@ -372,13 +372,7 @@ impl Default for HooksConfigMenuState {
 // ---------------------------------------------------------------------------
 
 impl DialogBehavior for HooksConfigMenuState {
-    fn core(&mut self) -> &mut DialogCore {
-        &mut self.core
-    }
-
-    fn core_shared(&self) -> &DialogCore {
-        &self.core
-    }
+    crate::dialogs::dialog::dialog_core_accessors!();
 
     /// `Esc` drills out one navigation level and only closes from the top-level
     /// event list (the shared default would close from any depth).
