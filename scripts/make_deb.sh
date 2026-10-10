@@ -82,6 +82,7 @@ case "\$1" in
                             /var/lib/robot-system/transactions \\
                             /var/log/robot-system \\
                             /run/robot-system
+        ln -sf /opt/robot-system/bin/rsctl /usr/bin/rsctl
         if command -v systemctl >/dev/null 2>&1; then
             systemctl daemon-reload || true
             systemctl enable robot-system.target || true
@@ -89,6 +90,13 @@ case "\$1" in
             systemctl start robot-system.target || true
             systemctl start robot-system-daemon.service || true
         fi
+        # 补全提示：completion 子命令输出的是可直接 eval 的 shell 脚本
+        echo ""
+        echo "rsctl 命令补全（可选）：把对应的一行加入配置文件后重开终端"
+        echo '  bash  ~/.bashrc                    eval "\$(rsctl completions bash)"'
+        echo '  zsh   ~/.zshrc                     eval "\$(rsctl completions zsh)"'
+        echo '  fish  ~/.config/fish/config.fish   rsctl completions fish | source'
+        echo ""
         ;;
 esac
 exit 0
@@ -101,6 +109,7 @@ touch postrm
 set -e
 case "\$1" in
     remove|purge)
+        rm -f /usr/bin/rsctl
         rm -f /etc/systemd/system/multi-user.target.wants/robot-system.target
         rm -f /etc/systemd/system/robot-system.target.wants/robot-system-daemon.service
         if command -v systemctl >/dev/null 2>&1; then
