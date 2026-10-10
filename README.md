@@ -58,27 +58,23 @@ Ubuntu 24.04 上的自定义软件包与运行状态管理系统，Rust 实现�
 ### 2.1 构建与测试
 
 ```bash
-cargo build --release
+cargo build --release --locked
 cargo test                     # 112 个单元测试
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 ### 2.2 打包与安装
 
 ```bash
-./scripts/build-deb.sh                 # 编译 release 并打包到 target/deb/
-sudo apt-get install -y ./target/deb/robot-system_0.1.0+ubuntu24.04_amd64.deb
+cargo build --workspace --release --locked
+sudo apt-get install -y fakeroot
+./scripts/make_deb.sh 0.1.0 /opt/robot-system
+sudo apt-get install -y ./dist/robot-system_0.1.0_amd64.deb
 ```
 
-脚本按架构文档 §5.3 的布局生成一个 DEB（需 `dpkg-deb`、`fakeroot`，无需 root）。安装时
-由维护者脚本建立运行目录并启用 target 与常驻服务；**不创建专用系统用户**（常驻服务以
-root 运行，能力由 unit 沙箱选项限制，见架构文档 §7）。
-
-- 产物名带构建主机的发行版后缀（如 `+ubuntu24.04`），使同名版本可在不同发行版上比较；
-  `--no-suffix` 去掉后缀，`--version` 覆盖版本号。
-- `--no-build` 复用已有 `target/release` 产物；`--out`、`--maintainer` 覆盖默认值。
-- 主配置 `/opt/robot-system/config/robot-system.conf` 是 **conffile**（升级保留运维改动，
-  缺失则用默认值，键见架构文档 §5.5）；本包不安装任何业务侧文件。
+`make_deb.sh` 使用已有的 release 二进制生成 DEB（需 `dpkg-deb`、`fakeroot`，无需 root），
+产物写入 `dist/`，架构由构建主机自动识别。GitHub Release 会在 `v*` 标签推送后，为
+`amd64` 和 `arm64` 分别构建并附加 DEB 文件。
 
 ### 2.3 本地验证（不安装到系统）
 
@@ -213,3 +209,6 @@ JSON 输出，以及两个程序的完整测试覆盖。
 3. 确保 `cargo fmt --all --check`、`cargo clippy --all-targets --all-features -- -D warnings`、
    `cargo test` 与 `cargo build --release --locked` 全部通过；
 4. 在 PR 中说明变更原因及验证方式。
+
+GitHub Actions 会在推送和 Pull Request 时运行格式检查、Clippy、测试与 release 构建；
+推送形如 `v0.1.0` 的标签会自动创建 GitHub Release 并附上两个架构的 DEB 包。
