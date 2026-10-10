@@ -1,0 +1,32 @@
+# robot-system 常驻服务
+
+[Unit]
+Description=Robot System Daemon (process/log/event collector)
+Documentation=file:/opt/robot-system/doc/ARCHITECTURE.md
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/opt/robot-system/bin/robot-system-daemon
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+
+# 以 root 运行，并靠下面的沙箱限制其能力
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=robot-system-daemon
+Environment=RUST_LOG=info
+
+# 收紧权限：只允许写入状态数据库与自身日志目录。
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/robot-system /var/log/robot-system
+
+[Install]
+WantedBy=robot-system.target

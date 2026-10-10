@@ -1,0 +1,11 @@
+# 该文件由 robot-system 自身部署到 /etc/systemd/system，便于管理员查看与覆盖
+# 业务服务的 unit 由各自的 DEB 提供，放在 /usr/lib/systemd/system
+#
+# 注意：systemd target 不是软件包数据库，它只负责组织服务依赖关系
+
+[Unit]
+Description=Robot Custom Software System
+Documentation=man:systemd.target(5)
+
+[Install]
+WantedBy=multi-user.target
