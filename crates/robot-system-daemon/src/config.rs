@@ -1,6 +1,6 @@
 //! 常驻服务配置。
 //!
-//! 与 `rsctl` 共用同一个配置文件 `/opt/robot-system/config/robot-system.conf`，
+//! 与 `rsctl` 共用同一个配置文件 `/etc/robot-system/robot-system.conf`，
 //! 但各自只读取自己关心的字段（未声明的字段会被忽略），见架构文档 §5.3。
 
 use std::path::Path;

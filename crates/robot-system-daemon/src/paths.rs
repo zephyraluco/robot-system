@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub struct Paths {
     /// 程序与静态资源根目录，默认 `/opt/robot-system`。
     pub opt_root: PathBuf,
+    /// 系统配置目录，默认 `/etc/robot-system`。
+    pub config_dir: PathBuf,
     /// 持久数据目录，默认 `/var/lib/robot-system`。
     pub var_lib: PathBuf,
     /// 日志目录，默认 `/var/log/robot-system`。
@@ -20,6 +22,7 @@ impl Default for Paths {
     fn default() -> Self {
         Self {
             opt_root: PathBuf::from("/opt/robot-system"),
+            config_dir: PathBuf::from("/etc/robot-system"),
             var_lib: PathBuf::from("/var/lib/robot-system"),
             log: PathBuf::from("/var/log/robot-system"),
         }
@@ -45,6 +48,7 @@ impl Paths {
         let base = prefix.as_ref();
         Self {
             opt_root: base.join("opt/robot-system"),
+            config_dir: base.join("etc/robot-system"),
             var_lib: base.join("var/lib/robot-system"),
             log: base.join("var/log/robot-system"),
         }
@@ -53,7 +57,7 @@ impl Paths {
     /// 主配置文件。
     #[must_use]
     pub fn config_file(&self) -> PathBuf {
-        self.opt_root.join("config/robot-system.conf")
+        self.config_dir.join("robot-system.conf")
     }
 
     /// 数据库结构迁移脚本目录。
@@ -83,6 +87,10 @@ mod tests {
         assert_eq!(
             paths.migrations_dir(),
             PathBuf::from("/tmp/rs/opt/robot-system/migrations")
+        );
+        assert_eq!(
+            paths.config_file(),
+            PathBuf::from("/tmp/rs/etc/robot-system/robot-system.conf")
         );
     }
 }

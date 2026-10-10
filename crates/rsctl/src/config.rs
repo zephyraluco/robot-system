@@ -1,6 +1,6 @@
 //! `rsctl` 的配置读取。
 //!
-//! 配置文件为 TOML 格式，位于 `/opt/robot-system/config/robot-system.conf`。
+//! 配置文件为 TOML 格式，位于 `/etc/robot-system/robot-system.conf`。
 //! 文件不存在时使用默认值，不视为错误。
 
 use std::path::Path;

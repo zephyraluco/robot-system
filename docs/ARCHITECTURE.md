@@ -432,7 +432,6 @@ rsctl **不迁移**，只读。
 ```text
 /opt/robot-system/                 # 程序与静态资源（可随版本整体替换）
 ├── bin/{rsctl, robot-system-daemon}
-├── config/robot-system.conf       # 两侧共用的 TOML；conffile（升级保留运维改动），见 §5.5
 ├── config/apps/*.toml             # 业务覆盖配置（升级前会被备份）
 ├── packages/*.toml                # DEB 提供的服务清单（仅用于归属展示）
 ├── migrations/*.sql               # 由 daemon 在启动时应用
@@ -446,6 +445,7 @@ rsctl **不迁移**，只读。
 /run/robot-system/                 # 运行时目录（tmpfs，重启即清空）
 └── lock                           # 应用级变更锁；目录与文件由 rsctl 按需创建
 /var/log/robot-system/daemon.log   # daemon 自身日志
+/etc/robot-system/robot-system.conf # 两侧共用的 TOML；conffile（升级保留运维改动），见 §5.5
 /etc/systemd/system/robot-system.target
 /usr/lib/systemd/system/robot-system-daemon.service
 /opt/robot/                        # 业务程序（不属于本项目）
@@ -453,7 +453,8 @@ rsctl **不迁移**，只读。
 
 **分发与归属**：`/opt/robot-system/` 下的程序与静态资源、上述两个 systemd 单元、以及
 `/usr/bin/rsctl`（指向 `/opt/robot-system/bin/rsctl` 的符号链接）都由本包的一个 DEB
-提供，由 `scripts/build-deb.sh` 生成。该 DEB 的维护者脚本承担原有安装脚本的职责：
+提供，主配置安装到 `/etc/robot-system/robot-system.conf`，由 `scripts/make_deb.sh`
+生成。该 DEB 的维护者脚本承担原有安装脚本的职责：
 
 | 脚本 | 动作 |
 |---|---|
@@ -480,8 +481,8 @@ rsctl **不迁移**，只读。
 
 ### 5.5 配置文件与业务侧文件格式
 
-**主配置**（`/opt/robot-system/config/robot-system.conf`）由本包的 DEB 从仓库的
-`etc/config/robot-system.conf` 装入，并**登记为 conffile**：升级时 dpkg 会比较包内默认值
+**主配置**（`/etc/robot-system/robot-system.conf`）由本包的 DEB 从仓库的
+`etc/robot-system.conf` 装入，并**登记为 conffile**：升级时 dpkg 会比较包内默认值
 与本地内容，若运维改过则保留本地内容，并把新版本写成 `.dpkg-dist` 供比对（若包内与本地
 都未变则直接更新）。两个程序共用同一个 TOML 文件，各自只读取自己关心的字段，未声明的
 字段使用默认值。该文件**不是运行必需的**——缺失时两侧直接使用默认值，因此它只是“把
@@ -777,7 +778,7 @@ cargo build --release --locked         # 构建
 cargo test                             # 112 个单元测试（rsctl 47 + daemon 65）
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all --check
-./scripts/build-deb.sh                 # 打包 DEB 到 target/deb/（需 dpkg-deb、fakeroot）
+./scripts/make_deb.sh 0.1.0 /opt/robot-system  # 打包 DEB 到 dist/（需 dpkg-deb、fakeroot）
 ```
 
 **验证手段**：除单元测试外，`ROBOT_SYSTEM_PREFIX` 可在沙箱中跑通"迁移 → 采集真实服务 →
