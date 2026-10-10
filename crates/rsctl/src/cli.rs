@@ -55,6 +55,10 @@ pub enum Command {
 
     /// 查询服务原始日志。
     Logs(LogsArgs),
+
+    /// 生成 shell 补全脚本。
+    #[command(hide = true)]
+    Completions(CompletionArgs),
 }
 
 /// 软件包与部署任务子命令。
@@ -212,4 +216,15 @@ pub struct LogsArgs {
     /// 最多返回的日志条数。
     #[arg(long, default_value_t = 50)]
     pub lines: usize,
+}
+
+/// 补全脚本生成参数。
+#[derive(Debug, Args)]
+pub struct CompletionArgs {
+    /// 目标 shell（`bash`、`zsh`、`fish`、`elvish`、`powershell`）。
+    #[arg(value_enum, value_name = "SHELL")]
+    pub shell: clap_complete::Shell,
+    /// 输出文件；省略时写入标准输出，便于重定向到补全目录。
+    #[arg(long, short, value_name = "FILE")]
+    pub output: Option<PathBuf>,
 }

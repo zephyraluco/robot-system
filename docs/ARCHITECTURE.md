@@ -763,6 +763,9 @@ rsctl metrics <unit> [--limit N]
 rsctl error list [--event-type T] [--service U] [--limit N]
 rsctl logs <unit> [--since 10m] [--priority err] [--lines N]
 
+# --- shell 补全（clap_complete 生成，输出到 stdout 或 --output 文件）---
+rsctl completions <SHELL> [--output FILE]   # bash|zsh|fish|elvish|powershell
+
 # 全局：--json（机器可读）、--opt-root <DIR>
 ```
 

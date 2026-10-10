@@ -38,6 +38,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Metrics(args) => commands::metrics::run(&ctx, args)?,
         Command::Error(command) => commands::events::run(&ctx, command)?,
         Command::Logs(args) => commands::logs::run(&ctx, args)?,
+        Command::Completions(args) => commands::completion::run(args)?,
     }
     Ok(())
 }

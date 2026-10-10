@@ -127,6 +127,10 @@ rsctl process history robot-lidar.service
 rsctl metrics robot-lidar.service
 rsctl error list [--event-type <type>] [--service <unit>]
 rsctl logs robot-lidar.service --since 10m --priority err
+
+# --- shell 补全（由 clap_complete 生成，支持 bash/zsh/fish/elvish/powershell）---
+rsctl completions bash > /etc/bash_completion.d/rsctl
+rsctl completions zsh --output ~/.zfunc/_rsctl
 ```
 
 **退出码约定**：部署任务只有在 `committed` 时才视为成功。失败但已回滚（`recovered`）

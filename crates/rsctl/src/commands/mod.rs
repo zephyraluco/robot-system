@@ -1,5 +1,6 @@
 //! 各子命令的实现。
 
+pub mod completion;
 pub mod events;
 pub mod logs;
 pub mod metrics;
